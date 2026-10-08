@@ -262,6 +262,11 @@ SESSION_SEARCH_GUIDANCE = (
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.
+SKILLS_DOMAIN_FIRST = (
+    "Detect the task's domain first and prioritize the matching specialized skill over generic "
+    "generation — UI/UX skills for interface design, debugging skills for error resolution, and the like."
+)
+
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
     "## Skill Safety Rule\n"
@@ -1349,6 +1354,7 @@ def _render_skills_index(
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     return (
         "## Skills\n"
+        f"{SKILLS_DOMAIN_FIRST}\n\n"
         "Scan the skills below before replying. If a skill matches or is relevant to your task, you MUST load it with "
         "skill_view(name) and follow its instructions. Skills contain specialized commands, APIs, and proven workflows; "
         f"load them even if basic tools like {_basic_tools} seem sufficient or you know the domain, as skills encode user standards.\n"

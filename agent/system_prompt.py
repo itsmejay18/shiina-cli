@@ -22,7 +22,8 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     SHIINA_AGENT_HELP_GUIDANCE, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
+    SKILLS_DOMAIN_FIRST, SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE,
+    TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
 from agent import prompt_builder as _pb
@@ -298,6 +299,7 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
 
 
 _SKILLS_ON_DEMAND_POINTER = (
+    f"{SKILLS_DOMAIN_FIRST}\n\n"
     "Skills are available on demand via the skills_list / skill_view tools — "
     "call skills_list when a task could use a specialized skill, then skill_view(name) "
     "to load it. The full catalog is omitted from this prompt to save context."
