@@ -4,7 +4,7 @@ import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { LONG_MSG } from '../config/limits.js'
-import { hasLeadGap } from '../domain/blockLayout.js'
+import { hasLeadGap, trailSuppressed } from '../domain/blockLayout.js'
 import { splitComposerHighlights } from '../domain/composerHighlights.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
@@ -14,10 +14,12 @@ import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { headerEmphasis, headerLabel } from '../design.js'
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
+import { Accordion } from './accordion.js'
 
 // Collapse threshold for long system messages (system prompt etc.)
 const SYSTEM_COLLAPSE_CHARS = 400
@@ -48,6 +50,7 @@ export const MessageLine = memo(function MessageLine({
   detailsMode = 'collapsed',
   detailsModeCommandOverride = false,
   isStreaming = false,
+  layoutSections,
   liveDetails = false,
   msg,
   prev,
@@ -64,9 +67,9 @@ export const MessageLine = memo(function MessageLine({
   // feeds Thinking + Tool calls.  Gating on every section would let
   // `thinking` (expanded by default) keep an empty wrapper alive when only
   // `tools` is hidden — exactly the empty-Box bug Copilot caught.
-  const thinkingMode = sectionMode('thinking', detailsMode, sections, detailsModeCommandOverride)
-  const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
-  const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
+  const thinkingMode = sectionMode('thinking', detailsMode, sections, detailsModeCommandOverride, layoutSections)
+  const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride, layoutSections)
+  const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride, layoutSections)
   const thinking = msg.thinking?.trim() ?? ''
 
   // One blank line above this block iff it opens a new visual group relative
@@ -80,6 +83,11 @@ export const MessageLine = memo(function MessageLine({
   // Collapse toggle for long system messages
   const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
   const [systemOpen, setSystemOpen] = useState(false)
+
+  // A finished turn shows its answer, not its work: unless details were asked
+  // for (config or /details), its trail paints nothing — no chevron rows either,
+  // which is what left one or two dead header lines under every past message.
+  // The live turn renders through StreamingAssistant and is exempt.
 
   if (msg.kind === 'trail' && msg.todos?.length) {
     return (
@@ -98,10 +106,12 @@ export const MessageLine = memo(function MessageLine({
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
+          layoutSections={layoutSections}
           preferExpandedThinking={liveDetails}
           reasoning={thinking}
           reasoningActive={reasoningActive}
           reasoningAlwaysVisible={msg.isMoaReference}
+          reasoningDuration={msg.thinkingDuration}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
@@ -128,16 +138,20 @@ export const MessageLine = memo(function MessageLine({
     const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
 
     return (
-      <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
-        {hasAnsi(msg.text) ? (
-          <Text wrap="truncate-end">
-            <Ansi>{safeAnsi}</Ansi>
-          </Text>
-        ) : (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {preview}
-          </Text>
-        )}
+      <Box alignSelf="flex-start" marginLeft={3} paddingX={t.design.spacing.insetPadX}>
+        <Accordion defaultOpen={liveDetails} t={t} title="Tool result" suffix={preview}>
+          <Box borderColor={t.color.muted} borderStyle={t.design.borders.panel} paddingX={t.design.spacing.insetPadX}>
+            {hasAnsi(msg.text) ? (
+              <Text wrap="truncate-end">
+                <Ansi>{safeAnsi}</Ansi>
+              </Text>
+            ) : (
+              <Text color={t.color.muted} wrap="truncate-end">
+                {msg.text}
+              </Text>
+            )}
+          </Box>
+        </Accordion>
       </Box>
     )
   }
@@ -172,6 +186,11 @@ export const MessageLine = memo(function MessageLine({
       return <Text color={t.color.muted}>{msg.text}</Text>
     }
 
+    if (msg.kind === 'diff') {
+      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
+      return <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
+    }
+
     // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
     // MUST come before the hasAnsi check — system messages from the backend
     // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
@@ -181,7 +200,7 @@ export const MessageLine = memo(function MessageLine({
       return (
         <Box flexDirection="column">
           <Box onClick={() => setSystemOpen(v => !v)}>
-            <Text color={t.color.accent}>{systemOpen ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.accent}>{`${systemOpen ? t.design.glyphs.chevronOpen : t.design.glyphs.chevronClosed} `}</Text>
             <Text color={t.color.muted}>{firstLine}</Text>
             <Text color={t.color.muted} dimColor>
               {' — '}
@@ -273,6 +292,7 @@ export const MessageLine = memo(function MessageLine({
             preferExpandedThinking={liveDetails}
             reasoning={thinking}
             reasoningActive={reasoningActive}
+            reasoningDuration={msg.thinkingDuration}
             reasoningTokens={msg.thinkingTokens}
             sections={sections}
             t={t}
@@ -285,10 +305,10 @@ export const MessageLine = memo(function MessageLine({
       {showResponseSeparator && (
         <Box marginBottom={1}>
           <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-            <Text color={t.color.border}>└─ </Text>
+            <Text color={t.color.border}>{t.design.indent.last || `${t.design.glyphs.railElbow}${t.design.borders.rule} `}</Text>
           </NoSelect>
-          <Text color={t.color.muted} dim>
-            Response
+          <Text {...headerEmphasis(t.design.header)} color={t.color.accent}>
+            {headerLabel(t.design.header, 'Response')}
           </Text>
         </Box>
       )}
@@ -317,8 +337,7 @@ export const MessageLine = memo(function MessageLine({
   )
 })
 
-export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
-  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
+export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean => false
 
 // A MoA reference block (msg.isMoaReference) is the user-facing
 // mixture-of-agents process the user opted into, not private model
@@ -338,6 +357,9 @@ interface MessageLineProps {
   detailsMode?: DetailsMode
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
+  /** Default progress visibility contributed by the active TUI layout
+   *  (`display.layout`). Layered under the user's explicit `sections`. */
+  layoutSections?: SectionVisibility
   liveDetails?: boolean
   msg: Msg
   // The block rendered directly above this one. Drives the group-boundary

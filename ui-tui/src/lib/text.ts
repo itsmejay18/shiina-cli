@@ -9,9 +9,25 @@ import {
   VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
+import { DEFAULT_BORDERS, DEFAULT_GLYPHS } from '../design.js'
 import type { ThinkingMode } from '../types.js'
 
 const WS_RE = /\s+/g
+
+// The tool-trail LINE PROTOCOL. A trail line is built once, persisted with the
+// transcript, and parsed back out of it (`isToolTrailResultLine`,
+// `parseToolTrailResultLine`, `sameToolTrailGroup`), so these marks are pinned
+// to the BUILT-IN glyphs rather than the live design: a design that restyles
+// `check`/`cross` must not break parsing of lines written before the switch.
+// Chrome that renders a trail line reads `t.design.glyphs` for its own marks.
+// (`MARK_DOT` / `MARK_RAIL` are preview text, same reasoning.)
+export const TOOL_TRAIL_OK = '✓'
+export const TOOL_TRAIL_ERR = '✗'
+const MARK_PENDING = DEFAULT_GLYPHS.pending
+const MARK_DOT = DEFAULT_GLYPHS.dot
+const MARK_RAIL = DEFAULT_GLYPHS.railVertical
+/** The code-fence label's rule (`rows` math mirrors what `markdown.tsx` paints). */
+const FENCE_RULE = DEFAULT_BORDERS.rule
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -36,10 +52,10 @@ const renderEstimateLine = (line: string) => {
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/^#{1,6}\s+/, '')
-    .replace(/^\s*[-*+]\s+\[( |x|X)\]\s+/, (_m, checked: string) => `• [${checked.toLowerCase() === 'x' ? 'x' : ' '}] `)
-    .replace(/^\s*[-*+]\s+/, '• ')
+    .replace(/^\s*[-*+]\s+\[( |x|X)\]\s+/, (_m, checked: string) => `${MARK_DOT} [${checked.toLowerCase() === 'x' ? 'x' : ' '}] `)
+    .replace(/^\s*[-*+]\s+/, `${MARK_DOT} `)
     .replace(/^\s*(\d+)\.\s+/, '$1. ')
-    .replace(/^\s*(?:>\s*)+/, '│ ')
+    .replace(/^\s*(?:>\s*)+/, `${MARK_RAIL} `)
 }
 
 export const compactPreview = (s: string, max: number) => {
@@ -75,15 +91,15 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
 }
 
 const SITUATIONAL_VERBS =
-  'reviewing|inspecting|verifying|examining|checking|cooking|admiring|fine-tuning|polishing|double-checking|reading|studying|analyzing|searching|gathering|digging|scouting|scanning|connecting|exploring|digesting|browsing|researching|looking|thinking|synthesizing|considering|deliberating|piecing|in the zone|locked in|working magic|brewing|letting|firing|putting'
+  'reviewing|inspecting|verifying|examining|checking|cooking|admiring|fine-tuning|polishing|double-checking|reading|studying|analyzing|searching|gathering|digging|scouting|scanning|connecting|exploring|digesting|browsing|researching|looking|thinking|overthinking|planning|debugging|diagnosing|troubleshooting|drafting|architecting|brainstorming|formulating|plotting|refining|figuring|hunting|untangling|pinpointing|mapping|testing|validating|confirming|ensuring|evaluating|synthesizing|considering|deliberating|piecing|in the zone|locked in|working magic|brewing|letting|firing|putting|simmering|whipping|channeling|crunching'
 
 const STATUS_LINE_RE = new RegExp(
-  `^\\s*(?:\\([^\\n)]*\\)\\S*\\s*)?(?:[A-Za-z0-9_.-]+\\s+){0,3}is\\s+(?:${SITUATIONAL_VERBS})\\b.*(?:\\.{2,3}|…)\\s*$`,
+  `^\\s*(?:\\([^\\n)]*\\)\\S*\\s*)?(?:[A-Za-z0-9_.-]+[:\\s]+\\s*){0,3}(?:is\\s+[a-z-]+|(?:${SITUATIONAL_VERBS}))\\b.*(?:\\.{2,3}|…)\\s*$`,
   'i'
 )
 
 const STATUS_JOINED_RE = new RegExp(
-  `((?:\\([^\\n)]*\\)\\S*\\s*)?(?:[A-Za-z0-9_.-]+\\s+){0,3}is\\s+(?:${SITUATIONAL_VERBS})\\b.*?(?:\\.{2,3}|…))\\s*([A-Za-z0-9])`,
+  `((?:\\([^\\n)]*\\)\\S*\\s*)?(?:[A-Za-z0-9_.-]+[:\\s]+\\s*){0,3}(?:is\\s+[a-z-]+|(?:${SITUATIONAL_VERBS}))\\b.*?(?:\\.{2,3}|…))\\s*([A-Za-z0-9])`,
   'gi'
 )
 
@@ -92,12 +108,15 @@ export const isThinkingStatusLine = (line: string): boolean => STATUS_LINE_RE.te
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
 const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|')})\\.{0,3}\\s*`, 'giu')
 
+const DSML_RE = /<[｜|]\s*DSML\s*[｜|][^>]*>/gi
+
 export const cleanThinkingText = (reasoning: string) =>
   reasoning
+    .replace(DSML_RE, '')
     .replace(STATUS_JOINED_RE, '$1\n\n$2')
     .split('\n')
     .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
-    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
+    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()) && !isThinkingStatusLine(line))
     .join('\n')
     .replace(/([^\n])(?=\*\*[^*\n][^\n]*?\*\*)/g, '$1\n\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -118,10 +137,88 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
   return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
 }
 
-export const boundedLiveRenderText = (
+/** The rendered tail window of a live reply, plus where it starts. */
+export interface LiveTail {
+  /** Absolute offset of `text` within the source — everything before it was
+   *  dropped from the render window (but the scanner still covers it). */
+  dropped: number
+  omittedChars: number
+  omittedLines: number
+  text: string
+}
+
+/**
+ * Bound a live reply to a render window (a tail), reporting the absolute offset
+ * of that window. The offset is what lets the incremental renderer keep scanning
+ * the untrimmed stream (see `StreamingMd`): a sliding window used to look like a
+ * brand-new document every delta and forced a full re-parse — ~130 ms per delta
+ * at the 16 KB cap, which is the long-reply stutter.
+ */
+export const liveTailWindow = (
   text: string,
   { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
-) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+): LiveTail => {
+  if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
+    return { dropped: 0, omittedChars: 0, omittedLines: 0, text }
+  }
+
+  let start = 0
+  let idx = text.length
+
+  for (let seen = 0; seen < maxLines && idx > 0; seen++) {
+    idx = text.lastIndexOf('\n', idx - 1)
+    start = idx < 0 ? 0 : idx + 1
+
+    if (idx < 0) {
+      break
+    }
+  }
+
+  const lineStart = start
+
+  start = Math.max(lineStart, text.length - maxChars)
+
+  if (start > lineStart) {
+    const nextBreak = text.indexOf('\n', start)
+
+    if (nextBreak >= 0 && nextBreak < text.length - 1) {
+      start = nextBreak + 1
+    }
+  }
+
+  const tail = text.slice(start).trimStart()
+  // `text.length - tail.length` is exactly where the rendered tail begins: the
+  // line walk plus whatever `trimStart` removed.
+  const dropped = text.length - tail.length
+
+  return {
+    dropped,
+    omittedChars: dropped,
+    omittedLines: countNewlines(text, start),
+    text: tail
+  }
+}
+
+/** The "[showing live tail; omitted …]" marker, or '' when nothing was dropped. */
+export const liveTailLabel = (
+  { omittedChars, omittedLines }: Pick<LiveTail, 'omittedChars' | 'omittedLines'>,
+  labelPrefix = 'showing live tail'
+) =>
+  omittedChars <= 0
+    ? ''
+    : omittedLines > 0
+      ? `[${labelPrefix}; omitted ${compactNumber(omittedLines)} lines / ${compactNumber(omittedChars)} chars]`
+      : `[${labelPrefix}; omitted ${compactNumber(omittedChars)} chars]`
+
+export const boundedLiveRenderText = (
+  text: string,
+  opts: { maxChars?: number; maxLines?: number } = {}
+) => {
+  const window = liveTailWindow(text, opts)
+  const label = liveTailLabel(window)
+
+  return label ? `${label}\n${window.text}` : window.text
+}
 
 const boundedRenderText = (
   text: string,
@@ -181,12 +278,16 @@ const countNewlines = (text: string, end: number) => {
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
 
-export const toolTrailLabel = (name: string) =>
-  name
-    .split('_')
-    .filter(Boolean)
-    .map(p => p[0]!.toUpperCase() + p.slice(1))
-    .join(' ') || name
+export const toolTrailLabel = (name: string) => {
+  if (name.toLowerCase() === 'patch') return 'Patched'
+  return (
+    name
+      .split('_')
+      .filter(Boolean)
+      .map(p => p[0]!.toUpperCase() + p.slice(1))
+      .join(' ') || name
+  )
+}
 
 export const formatToolCall = (name: string, context = '') => {
   const label = toolTrailLabel(name)
@@ -205,7 +306,7 @@ export const buildToolTrailLine = (
   const detail = compactPreview(note ?? '', 72)
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? TOOL_TRAIL_ERR : TOOL_TRAIL_OK}`
 }
 
 const verboseToolBlock = (label: string, text?: string) => {
@@ -237,31 +338,48 @@ export const buildVerboseToolTrailLine = (
 
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? TOOL_TRAIL_ERR : TOOL_TRAIL_OK}`
 }
 
-export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
+export const isToolTrailResultLine = (line: string) =>
+  line.endsWith(` ${TOOL_TRAIL_OK}`) || line.endsWith(` ${TOOL_TRAIL_ERR}`)
 
 export const parseToolTrailResultLine = (line: string) => {
-  if (!isToolTrailResultLine(line)) {
+  // Verbose trail: the mark closes the LAST line and the detail (Args/Result
+  // blocks) spans the lines between the call and the mark.
+  if (isToolTrailResultLine(line)) {
+    const mark = line.endsWith(` ${TOOL_TRAIL_ERR}`) ? TOOL_TRAIL_ERR : TOOL_TRAIL_OK
+    const body = line.slice(0, -2)
+    const sep = body.indexOf(' :: ')
+
+    if (sep >= 0) {
+      return { call: body.slice(0, sep), detail: body.slice(sep + 4), mark }
+    }
+
+    const legacy = body.indexOf(': ')
+
+    if (legacy > 0) {
+      return { call: body.slice(0, legacy), detail: body.slice(legacy + 2), mark }
+    }
+
+    return { call: body, detail: '', mark }
+  }
+
+  // Combined tool + inline-diff trail: the mark closes the FIRST line and a
+  // ```diff block follows the call (patch comparison under the patch entry).
+  const firstLine = line.split('\n')[0] ?? line
+
+  if (!isToolTrailResultLine(firstLine)) {
     return null
   }
 
-  const mark = line.endsWith(' ✗') ? '✗' : '✓'
-  const body = line.slice(0, -2)
+  const diffPart = line.slice(firstLine.length + 1)
+  const mark = firstLine.endsWith(` ${TOOL_TRAIL_ERR}`) ? TOOL_TRAIL_ERR : TOOL_TRAIL_OK
+  const body = firstLine.slice(0, -2)
   const sep = body.indexOf(' :: ')
+  const detail = sep >= 0 ? [body.slice(sep + 4), diffPart].filter(Boolean).join('\n') : diffPart
 
-  if (sep >= 0) {
-    return { call: body.slice(0, sep), detail: body.slice(sep + 4), mark }
-  }
-
-  const legacy = body.indexOf(': ')
-
-  if (legacy > 0) {
-    return { call: body.slice(0, legacy), detail: body.slice(legacy + 2), mark }
-  }
-
-  return { call: body, detail: '', mark }
+  return { call: sep >= 0 ? body.slice(0, sep) : body, detail, mark }
 }
 
 export const splitToolDuration = (call: string) => {
@@ -273,8 +391,8 @@ export const splitToolDuration = (call: string) => {
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
 
 export const sameToolTrailGroup = (label: string, entry: string) =>
-  entry === `${label} ✓` ||
-  entry === `${label} ✗` ||
+  entry === `${label} ${TOOL_TRAIL_OK}` ||
+  entry === `${label} ${TOOL_TRAIL_ERR}` ||
   entry.startsWith(`${label}(`) ||
   entry.startsWith(`${label} ::`) ||
   entry.startsWith(`${label}:`)
@@ -305,7 +423,7 @@ export const estimateRows = (text: string, w: number, compact = false) => {
         fence = { char: marker[0] as '`' | '~', len: marker.length }
 
         if (lang) {
-          rows += Math.ceil((`─ ${lang}`.length || 1) / w)
+          rows += Math.ceil((`${FENCE_RULE} ${lang}`.length || 1) / w)
         }
       } else if (marker[0] === fence.char && marker.length >= fence.len) {
         fence = null
@@ -362,7 +480,7 @@ export const formatAbandonedClarifyBatch = (
   const lines = questions.map(q => {
     const answer = answers[q.qid]
 
-    return answer ? `  ✓ ${q.question} → ${answer}` : `  · ${q.question} (no answer)`
+    return answer ? `  ${TOOL_TRAIL_OK} ${q.question} → ${answer}` : `  ${MARK_PENDING} ${q.question} (no answer)`
   })
 
   return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
@@ -394,7 +512,7 @@ export const clarifyBatchRevisitState = (
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 
-export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
+export const pick = <T>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)]!
 
 export const isPasteBackedText = (text: string) =>
   /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)(?:[^\n]*?)\]/.test(text)

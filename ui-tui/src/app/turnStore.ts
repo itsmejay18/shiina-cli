@@ -10,10 +10,19 @@ const buildTurnState = (): TurnState => ({
   reasoning: '',
   reasoningActive: false,
   reasoningStreaming: false,
+  reasoningDuration: 0,
   reasoningTokens: 0,
   streamPendingTools: [],
   streamSegments: [],
   streaming: '',
+  /** Untrimmed reply text of the live turn — the incremental markdown scanner
+   *  needs the stream itself, not the tail window (a sliding window looks like a
+   *  new document every delta and forces a full re-parse). */
+  streamingRaw: '',
+  /** Absolute offset of the render window inside `streamingRaw`. */
+  streamingDropped: 0,
+  /** "[showing live tail; omitted …]" marker for the dropped head, or ''. */
+  streamingLabel: '',
   subagents: [],
   todoCollapsed: false,
   todos: [],
@@ -72,10 +81,14 @@ export interface TurnState {
   reasoning: string
   reasoningActive: boolean
   reasoningStreaming: boolean
+  reasoningDuration: number
   reasoningTokens: number
   streamPendingTools: string[]
   streamSegments: Msg[]
   streaming: string
+  streamingDropped: number
+  streamingLabel: string
+  streamingRaw: string
   subagents: SubagentProgress[]
   todoCollapsed: boolean
   todos: TodoItem[]

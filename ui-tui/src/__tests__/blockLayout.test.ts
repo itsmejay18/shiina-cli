@@ -68,22 +68,24 @@ describe('blockRenders', () => {
   const trail: Msg = { role: 'system', kind: 'trail', text: '', tools: ['Edit foo.ts'] }
   const model: Msg = { role: 'assistant', text: 'hi' }
   const todos: Msg = { role: 'system', kind: 'trail', text: '', todos: [{ content: 'a', id: '1', status: 'pending' }] }
+  const diff: Msg = { role: 'assistant', kind: 'diff', text: '```diff\n- a\n+ b\n```' }
+  const toolResult: Msg = { role: 'tool', text: 'ok' }
 
-  it('always renders non-trail blocks', () => {
+  it('always renders plain assistant blocks', () => {
     expect(blockRenders(model, { detailsMode: 'hidden', commandOverride: true })).toBe(true)
   })
 
-  it('renders a content-bearing trail unless every section is hidden', () => {
+  it('renders settled diffs, tool results, and trails so they stay in conversation collapsed', () => {
+    expect(blockRenders(diff, { detailsMode: 'collapsed' })).toBe(true)
+    expect(blockRenders(toolResult, { detailsMode: 'collapsed' })).toBe(true)
     expect(blockRenders(trail, { detailsMode: 'collapsed' })).toBe(true)
     expect(blockRenders(trail, { detailsMode: 'expanded' })).toBe(true)
-    // /details hidden routes through commandOverride, which hides every section.
-    expect(blockRenders(trail, { detailsMode: 'hidden', commandOverride: true })).toBe(false)
   })
 
   it('does not render a content-less trail (e.g. finalDetails with only a token tally)', () => {
     const tally: Msg = { role: 'system', kind: 'trail', text: '', toolTokens: 40 }
 
-    expect(blockRenders(tally, { detailsMode: 'expanded' })).toBe(false)
+    expect(blockRenders(tally, { commandOverride: true, detailsMode: 'expanded' })).toBe(false)
   })
 
   it('keeps todo trails visible even when details are hidden', () => {
@@ -93,7 +95,7 @@ describe('blockRenders', () => {
 
 describe('prevRenderedMsg', () => {
   const hiddenCtx = { commandOverride: true, detailsMode: 'hidden' as const }
-  const shownCtx = { detailsMode: 'collapsed' as const }
+  const shownCtx = { commandOverride: true, detailsMode: 'collapsed' as const }
 
   const rows: Msg[] = [
     { role: 'user', text: 'q' }, // 0

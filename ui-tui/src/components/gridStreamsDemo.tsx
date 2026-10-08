@@ -84,6 +84,7 @@ function TokenStream({ height, t, width }: { height: number; t: Theme; width: nu
   return (
     <Text color={t.color.text} wrap="wrap">
       {words.join(' ')}
+      {/* Stream cursor — a demo/grid primitive (an eighth-block cell), not chrome. */}
       <Text color={t.color.primary}>▌</Text>
     </Text>
   )
@@ -273,18 +274,18 @@ function StreamPanel({
   return (
     <Box
       borderColor={borderColor}
-      borderStyle="round"
+      borderStyle={t.design.borders.panel}
       flexDirection="column"
       height={cell.height}
-      paddingX={1}
+      paddingX={t.design.spacing.insetPadX}
       width={cell.width}
     >
       {/* No phantom icon column: unfocused titles sit flush left — the ▸
           appears (and shifts the title) only while focused. */}
       <Text bold={focused} color={focused ? t.color.primary : t.color.label} wrap="truncate">
-        {focused ? '▸ ' : ''}
+        {focused ? `${t.design.glyphs.active} ` : ''}
         {title}
-        {main ? ' ·' : ''}
+        {main ? t.design.glyphs.dotSeparator.trimEnd() : ''}
       </Text>
 
       <Box flexDirection="column" height={innerHeight} overflow="hidden" width={innerWidth}>
@@ -319,10 +320,10 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
         <Box
           alignItems="center"
           borderColor={t.color.border}
-          borderStyle="round"
+          borderStyle={t.design.borders.panel}
           height={cell.height}
           justifyContent="space-between"
-          paddingX={1}
+          paddingX={t.design.spacing.insetPadX}
           width={cell.width}
         >
           <Text bold color={t.color.primary}>

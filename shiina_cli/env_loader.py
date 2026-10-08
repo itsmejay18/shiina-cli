@@ -302,17 +302,25 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | N
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
+def _sanitize_env_lines(lines: list) -> list:
+    """Normalize .env line endings/whitespace without changing assignment semantics.
+    Content after the first ``=`` is opaque value data: a known variable name embedded in a value
+    must never be reinterpreted as another assignment, so concatenated lines stay on one line."""
+    sanitized: list[str] = []
+    for line in lines:
+        raw = line.rstrip("\r\n")
+        stripped = raw.strip()
+        # Blank lines and comments are preserved verbatim.
+        sanitized.append((raw if not stripped or stripped.startswith("#") else stripped) + "\n")
+    return sanitized
+
+
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
     decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
     we never fall through to the errors=replace corruption path."""
     if not path.exists():
         return
-    try:
-        from shiina_cli.config import _sanitize_env_lines
-    except ImportError:
-        return  # early bootstrap — config module not available yet
-
     try:
         raw = path.read_bytes()
     except Exception:
@@ -378,6 +386,7 @@ def load_shiina_dotenv(
     shiina_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
     load_external_secrets: bool = True,
+    reapply_terminal_bridge: bool = True,
 ) -> list[Path]:
     """Load Shiina env files: ``~/.shiina/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
@@ -457,7 +466,8 @@ def load_shiina_dotenv(
     # reload. Startup launchers bridge config→env once, but long-lived processes (gateway per-turn reload,
     # cron standalone runs) call load_shiina_dotenv() repeatedly and used to flip the effective backend back
     # to the stale .env value mid-session (#29186, #67323).
-    _reapply_terminal_config_bridge(home_path)
+    if reapply_terminal_bridge:
+        _reapply_terminal_config_bridge(home_path)
 
     return loaded
 
@@ -465,9 +475,21 @@ def load_shiina_dotenv(
 def _reapply_terminal_config_bridge(home_path: Path) -> None:
     """Re-assert config.yaml's explicit ``terminal.*`` keys over reloaded .env via the single shared bridge
     ``apply_terminal_config_to_env`` (also used by terminal_tool and the TUI/dashboard launchers) so the
-    semantics can't drift between sites."""
+    semantics can't drift between sites.
+
+    Importing ``shiina_cli.config`` for this costs ~0.4 s, so the CLI entry point defers the call to
+    ``main()`` (``load_shiina_dotenv(reapply_terminal_bridge=False)``) — still ahead of every reader of
+    ``TERMINAL_*``, but out of ``import shiina_cli.main``. Reload callers (gateway per-turn, cron) keep
+    the default and re-assert on every pass.
+    """
     try:
         if Path(home_path).resolve() != _process_shiina_home().resolve():
+            return
+        # Without a config.yaml there is nothing to re-assert: the bridge only overrides a stale .env
+        # with the file's explicit terminal.* keys. Skipping the import keeps the config facade out of
+        # `import shiina_cli.main` on a config-less home; the terminal tool's own
+        # `_ensure_terminal_env_bridged` backfills defaults on first use.
+        if not (Path(home_path) / "config.yaml").exists():
             return
         from shiina_cli.config import apply_terminal_config_to_env
 
@@ -592,20 +614,18 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 
 def _load_secrets_config(home_path: Path) -> dict:
-    """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
+    """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv.
+
+    Deliberately a direct parse rather than ``shiina_cli.config.read_raw_config``: importing that
+    module pulls the whole config graph (~0.45 s of urllib + provider/plugin tables) onto every
+    startup for one small YAML read. Dropping the shared raw-config cache costs one extra parse of
+    the same small file. Reading ``home_path`` directly is also what the old
+    ``home_path == _process_shiina_home()`` guard was working around — the cached reader always
+    resolves the ACTIVE home, which is wrong under a scoped override.
+    """
     config_path = home_path / "config.yaml"
     if not config_path.exists():
         return {}
-    # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so
-    # populating it lets main.py's early bridge and shiina_logging reuse one parse instead of 3-4.
-    if home_path == _process_shiina_home():
-        try:
-            from shiina_cli.config import read_raw_config
-
-            data = read_raw_config() or {}
-            return data.get("secrets") or {}
-        except Exception:
-            pass
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             data = fast_safe_load(f) or {}

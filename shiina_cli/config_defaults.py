@@ -759,6 +759,28 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "tui_compact": True,
+        # Structural TUI layout. Each one is a complete arrangement: where the
+        # chrome sits AND how much of the agent's work shows by default.
+        #   "minimal"   transcript + prompt, progress folded to compact rows
+        #   "workbench" single column — every instrument wraps the composer;
+        #               the long-standing look (default)
+        #   "studio"    a reserved right column holds the live agents board +
+        #               todo list beside the transcript
+        #   "timeline"  progress-forward — the turn's steps stay visible as a
+        #               running ledger above the composer
+        # Switch live with `/layout`. Unknown values fall back to workbench
+        # rather than blanking the UI; renderer mirror: ui-tui/src/domain/layout.ts.
+        "layout": "workbench",
+        # Visual design for the TUI: colours, glyphs, borders, prompt symbol,
+        # animations, status-bar fields — PLUS the structural arrangement a
+        # design may override. Pure data in ~/.shiina/designs/<name>.yaml; the
+        # shipped built-ins are shiina_cli/designs/ and the schema is documented
+        # in shiina_cli/designs/README.md. `default` declares nothing and is the
+        # built-in look. Seed the folder with `shiina design init`; switch from
+        # the CLI with `shiina design use <name>` or live in the TUI with
+        # `/design <name>`. Unknown values fall
+        # back to default rather than blanking the UI. Engine: shiina_cli/design_engine.py.
+        "design": "codex",
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume.
@@ -835,7 +857,7 @@ DEFAULT_CONFIG = {
         # /focus off restores. Never affects what the model sees (focus_view.py).
         "focus_view": False,
         "focus_saved_tool_progress": "all",
-        "skin": "shiina",
+        "skin": "default",
         # UI language for static messages (approval prompts, some gateway slash replies); not agent
         # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",

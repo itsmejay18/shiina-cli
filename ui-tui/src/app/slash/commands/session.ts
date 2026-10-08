@@ -262,7 +262,7 @@ export const sessionCommands: SlashCommand[] = [
             }
 
             if (r.summary?.headline) {
-              const prefix = r.summary.noop ? '' : '✓ '
+              const prefix = r.summary.noop ? '' : `${ctx.ui.theme.design.glyphs.check} `
 
               ctx.transcript.sys(`${prefix}${r.summary.headline}`)
 
@@ -282,7 +282,7 @@ export const sessionCommands: SlashCommand[] = [
             }
 
             ctx.transcript.sys(
-              `compressed ${r.removed} messages${r.usage?.total ? ` · ${compactNumber(r.usage.total)} tok` : ''}`
+              `compressed ${r.removed} messages${r.usage?.total ? `${ctx.ui.theme.design.glyphs.dotSeparator}${compactNumber(r.usage.total)} tok` : ''}`
             )
           })
         )
@@ -471,21 +471,7 @@ export const sessionCommands: SlashCommand[] = [
     }
   },
 
-  {
-    help: 'switch theme skin (fires skin.changed)',
-    name: 'skin',
-    run: (arg, ctx) => {
-      if (!arg) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
-          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
-      }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
-    }
-  },
 
   {
     help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
@@ -685,7 +671,7 @@ export const sessionCommands: SlashCommand[] = [
         // dollar usage model (two-bar view, dollars-only); fall back to the
         // legacy text lines only when the model is unavailable.
         const usageModel = r?.usage
-        const barLines = usageBarsText(usageModel)
+        const barLines = usageBarsText(usageModel, ctx.ui.theme.design.glyphs)
         let showedBalance = false
 
         if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {

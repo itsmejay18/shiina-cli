@@ -14,6 +14,7 @@ import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { layoutRegions, layoutSections, type LayoutRegions } from '../domain/layout.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -26,6 +27,7 @@ import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from 
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { LiveAgentsPanel } from './agentsPanel.js'
+import { StepLedger } from './stepLedger.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel } from './branding.js'
@@ -37,6 +39,7 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { StudioSidePane } from './studioSidePane.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
@@ -139,22 +142,38 @@ const PromptPrefix = memo(function PromptPrefix({
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
-  composer,
+  cols,
   progress,
+  rails,
+  scrollbar,
+  sideColumn,
+  todoUnderPrompt,
   transcript
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
+}: Pick<AppLayoutProps, 'actions' | 'progress' | 'transcript'> & {
+  cols: number
+  rails: boolean
+  scrollbar: boolean
+  sideColumn: boolean
+  todoUnderPrompt: boolean
+}) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
-  const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
+  const railWidth = useAmbientRailWidth('left') + useAmbientRailWidth('right')
+  // A layout without rails never mounts AmbientRail, so their columns are not
+  // part of this pane's width budget either.
+  const railCols = rails ? railWidth : 0
+  // The pet owns the frame's bottom-right corner, which in studio is the
+  // reserved side column — this pane has nothing to clear there.
+  const pet = sideColumn ? null : petBox
 
   // Keep transcript text clear of the floating pet, responsively:
   //  - wide terminals: reserve a right gutter so lines wrap to the pet's left
   //    (as long as enough width is left for comfortable reading);
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
-  const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
-  const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
-  const petBandRows = petBox && !useGutter ? petBox.height : 0
+  const useGutter = !!pet && cols - railCols - pet.width >= MIN_GUTTER_BODY_COLS
+  const bodyCols = Math.max(28, (useGutter && pet ? cols - pet.width : cols) - railCols)
+  const petBandRows = pet && !useGutter ? pet.height : 0
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
   // visually belongs to the prompt and follows it during scroll. -1 when
@@ -198,21 +217,21 @@ const TranscriptPane = memo(function TranscriptPane({
         ref={transcript.scrollRef}
         stickyScroll
       >
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" paddingX={ui.theme.design.spacing.insetPadX}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
+                  <Text color={ui.theme.color.border}>{ui.theme.design.borders.rule.repeat(3)}</Text>
                 </Box>
               )}
 
               {row.msg.kind === 'intro' ? (
                 isLoading ? (
                   <Box flexDirection="column" paddingTop={1}>
-                    <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+                    <Banner maxWidth={Math.max(1, cols - 2)} t={ui.theme} />
                   </Box>
                 ) : null
               ) : row.msg.kind === 'panel' && row.msg.panelData ? (
@@ -224,9 +243,11 @@ const TranscriptPane = memo(function TranscriptPane({
                   detailsMode={ui.detailsMode}
                   detailsModeCommandOverride={ui.detailsModeCommandOverride}
                   msg={row.msg}
+                  layoutSections={layoutSections(ui.layout, ui.design?.layout?.sections)}
                   prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
                     commandOverride: ui.detailsModeCommandOverride,
                     detailsMode: ui.detailsMode,
+                    layoutDefaults: layoutSections(ui.layout, ui.design?.layout?.sections),
                     sections: ui.sections
                   })}
                   sections={ui.sections}
@@ -235,7 +256,7 @@ const TranscriptPane = memo(function TranscriptPane({
                 />
               )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
+              {todoUnderPrompt && row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
@@ -256,9 +277,11 @@ const TranscriptPane = memo(function TranscriptPane({
         </Box>
       </ScrollBox>
 
-      <NoSelect flexShrink={0} marginLeft={1}>
-        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
-      </NoSelect>
+      {scrollbar && (
+        <NoSelect flexShrink={0} marginLeft={1}>
+          <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        </NoSelect>
+      )}
 
       <StickyPromptTracker
         messages={transcript.historyItems}
@@ -274,9 +297,11 @@ const ComposerPane = memo(function ComposerPane({
   actions,
   composer,
   cursorSnapshotRef,
+  regions,
   status
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'> & {
   cursorSnapshotRef: MutableRefObject<InputCursorSnapshot | null>
+  regions: LayoutRegions
 }) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
@@ -340,7 +365,7 @@ const ComposerPane = memo(function ComposerPane({
           actions.clearSelection()
         }
       }}
-      paddingX={1}
+      paddingX={ui.theme.design.spacing.insetPadX}
     >
       <QueuedMessages
         cols={composer.cols}
@@ -355,7 +380,7 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt ? (
+      {regions.stickyPrompt && status.showStickyPrompt ? (
         <Text color={ui.theme.color.muted} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
 
@@ -365,9 +390,16 @@ const ComposerPane = memo(function ComposerPane({
         <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
-      <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
-      <StatusRulePane at="top" composer={composer} status={status} />
-      <AmbientDock placement="dock-top" />
+      {regions.agentsDock && <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />}
+      {regions.ledger && <StepLedger cols={Math.max(1, composer.cols - 2)} t={ui.theme} />}
+      <StatusRulePane
+        at="top"
+        cols={composer.cols}
+        fileChanges={regions.fileChanges}
+        status={status}
+        statusRule={regions.statusRule}
+      />
+      {regions.dock && <AmbientDock placement="dock-top" />}
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
@@ -397,7 +429,7 @@ const ComposerPane = memo(function ComposerPane({
                   )}
                 </Box>
 
-                <Text color={ui.theme.color.text}>{line || ' '}</Text>
+                <Text color={ui.theme.color.prompt}>{line || ' '}</Text>
               </Box>
             ))}
 
@@ -422,7 +454,7 @@ const ComposerPane = memo(function ComposerPane({
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   accentColor={ui.theme.color.accent}
-                  color={ui.theme.color.text}
+                  color={ui.theme.color.prompt}
                   columns={inputColumns}
                   cursorSnapshotRef={cursorSnapshotRef}
                   mouseApiRef={inputMouseRef}
@@ -451,8 +483,14 @@ const ComposerPane = memo(function ComposerPane({
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>★ {ui.status}</Text>}
 
-      <AmbientDock placement="dock-bottom" />
-      <StatusRulePane at="bottom" composer={composer} status={status} />
+      {regions.dock && <AmbientDock placement="dock-bottom" />}
+      <StatusRulePane
+        at="bottom"
+        cols={composer.cols}
+        fileChanges={regions.fileChanges}
+        status={status}
+        statusRule={regions.statusRule}
+      />
     </NoSelect>
   )
 })
@@ -481,44 +519,55 @@ const JourneyPane = memo(function JourneyPane() {
 
 const StatusRulePane = memo(function StatusRulePane({
   at,
-  composer,
-  status
-}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
+  cols,
+  fileChanges,
+  status,
+  statusRule
+}: Pick<AppLayoutProps, 'status'> & {
+  at: 'bottom' | 'top'
+  cols: number
+  fileChanges: boolean
+  statusRule: boolean
+}) {
   const ui = useStore($uiState)
 
-  if (ui.statusBar !== at) {
+  if (ui.statusBar !== at || (!statusRule && !fileChanges)) {
     return null
   }
 
   return (
     <Box flexDirection="column" marginTop={at === 'top' ? 1 : 0}>
-      <FileChangesStrip busy={ui.busy} sessionId={ui.sid} t={ui.theme} />
-      <StatusRule
-        battery={ui.battery ? ui.batteryStatus : null}
-        bgCount={ui.bgTasks.size}
-        busy={ui.busy}
-        cols={composer.cols}
-        compacting={ui.compacting}
-        cwdLabel={status.cwdLabel}
-        focusView={ui.focusView}
-        indicatorStyle={ui.indicatorStyle}
-        lastTurnEndedAt={status.lastTurnEndedAt}
-        liveSessionCount={ui.liveSessionCount}
-        model={ui.info?.model ?? ''}
-        modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
-        modelReasoningEffort={ui.info?.reasoning_effort}
-        notice={ui.notice}
-        onSessionCountClick={() => patchOverlayState({ sessions: true })}
-        sessionStartedAt={status.sessionStartedAt}
-        sessionTitle={status.sessionTitle}
-        status={ui.status}
-        statusBarFields={ui.statusBarFields}
-        statusColor={status.statusColor}
-        t={ui.theme}
-        turnStartedAt={status.turnStartedAt}
-        usage={ui.usage}
-        voiceLabel={status.voiceLabel}
-      />
+      {fileChanges && <FileChangesStrip busy={ui.busy} sessionId={ui.sid} t={ui.theme} />}
+
+      {statusRule && (
+        <StatusRule
+          battery={ui.battery ? ui.batteryStatus : null}
+          bgCount={ui.bgTasks.size}
+          busy={ui.busy}
+          cols={cols}
+          compacting={ui.compacting}
+          cwdLabel={status.cwdLabel}
+          focusView={ui.focusView}
+          indicatorStyle={ui.indicatorStyle}
+          lastTurnEndedAt={status.lastTurnEndedAt}
+          liveSessionCount={ui.liveSessionCount}
+          model={ui.info?.model ?? ''}
+          modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+          modelReasoningEffort={ui.info?.reasoning_effort}
+          notice={ui.notice}
+          onSessionCountClick={() => patchOverlayState({ sessions: true })}
+          sessionStartedAt={status.sessionStartedAt}
+          sessionTitle={status.sessionTitle}
+          status={ui.status}
+          statusBarFields={ui.statusBarFields}
+          statusColor={status.statusColor}
+          t={ui.theme}
+          turnStartedAt={status.turnStartedAt}
+          usage={ui.usage}
+          voiceLabel={status.voiceLabel}
+          voiceTone={status.voiceTone}
+        />
+      )}
     </Box>
   )
 })
@@ -533,6 +582,22 @@ export const AppLayout = memo(function AppLayout({
 }: AppLayoutProps) {
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
+
+  // One region table for the whole frame. Memoized so the pane memos keep
+  // seeing a stable prop between keystrokes (a fresh object every render would
+  // defeat them); it only depends on the layout id and the terminal width.
+  const regions = useMemo(
+    // Phone PTYs cannot afford reserved panes: degrade cleanly. Inline mode
+    // alone does not degrade — primary-buffer rendering on a wide terminal
+    // keeps the same regions, and `layoutRegions` already drops studio's side
+    // column when the width cannot afford it.
+    () => layoutRegions(ui.layout, composer.cols, { regions: ui.design?.layout?.regions, singleColumn: TERMUX_TUI_MODE }),
+    [ui.layout, ui.design, composer.cols]
+  )
+  // An open agents/journey overlay owns the screen: rails, side column, prompt
+  // and composer all step aside.
+  const screenOverlay = overlay.agents || overlay.journey
+  const transcriptCols = Math.max(1, composer.cols - regions.sideWidth)
 
   const cursorSnapshotRef = useRef<InputCursorSnapshot | null>(null)
   useEffect(() => {
@@ -549,7 +614,7 @@ export const AppLayout = memo(function AppLayout({
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position="relative">
         <Box flexDirection="row" flexGrow={1}>
-          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
+          {!screenOverlay && regions.rails && <AmbientRail side="left" />}
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
@@ -560,13 +625,27 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
           ) : (
             <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              <TranscriptPane
+                actions={actions}
+                cols={transcriptCols}
+                progress={progress}
+                rails={regions.rails}
+                scrollbar={regions.scrollbar}
+                sideColumn={regions.sideActive}
+                todoUnderPrompt={regions.todoUnderPrompt}
+                transcript={transcript}
+              />
             </PerfPane>
           )}
-          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
+          {!screenOverlay && regions.sideActive && (
+            <PerfPane id="studio-side">
+              <StudioSidePane width={regions.sideWidth} />
+            </PerfPane>
+          )}
+          {!screenOverlay && regions.rails && <AmbientRail side="right" />}
         </Box>
 
-        {!overlay.agents && !overlay.journey && (
+        {!screenOverlay && (
           <>
             <PerfPane id="prompt">
               <PromptZone
@@ -585,6 +664,7 @@ export const AppLayout = memo(function AppLayout({
                 actions={actions}
                 composer={composer}
                 cursorSnapshotRef={cursorSnapshotRef}
+                regions={regions}
                 status={status}
               />
             </PerfPane>
@@ -597,7 +677,7 @@ export const AppLayout = memo(function AppLayout({
           </>
         )}
 
-        {!overlay.agents && <PetPane />}
+        {regions.pet && !overlay.agents && <PetPane />}
       </Box>
 
       <ActiveWidgetSlot />

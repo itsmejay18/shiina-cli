@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 from utils import is_truthy_value
-from shiina_constants import INDICATOR_STYLES
+from shiina_constants import INDICATOR_STYLES, LAYOUT_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -194,11 +194,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[normal|fast|auto|cold|status] [--global]",
                subcommands=("normal", "fast", "auto", "cold", "status", "on", "off", "--global"),
                desktop="advanced"),
-    CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               cli_only=True, args_hint="[name]", argument_mode="options"),
+
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
                cli_only=True, args_hint=f"[{'|'.join(INDICATOR_STYLES)}]",
                subcommands=INDICATOR_STYLES, desktop="terminal"),
+    CommandDef("design", "Pick or switch the TUI design (appearance, colors, layout)", "Configuration",
+               aliases=("layout", "skin"),
+               cli_only=True, args_hint="[name|cycle]"),
     CommandDef("voice", "Toggle voice mode (or pick the TTS voice)", "Configuration",
                args_hint="[on|off|tts|voice|status]", subcommands=("on", "off", "tts", "voice", "status"),
                desktop="composer-voice"),

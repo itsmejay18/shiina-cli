@@ -5,14 +5,15 @@ import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
-import { appendToolShelfMessage } from '../lib/liveProgress.js'
+import { layoutSections } from '../domain/layout.js'
+import { appendToolShelfMessage, keepRecentStepRows } from '../lib/liveProgress.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { MessageLine } from './messageLine.js'
 import { TodoPanel } from './todoPanel.js'
 
 const groupedSegments = (segments: Msg[]): Msg[] =>
-  segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
+  keepRecentStepRows(segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), []))
 
 interface LiveBlock {
   isStreaming?: boolean
@@ -62,12 +63,20 @@ export const StreamingAssistant = memo(function StreamingAssistant({
     blocks.push({ key: 'pending-tools', msg: { kind: 'trail', role: 'system', text: '', tools: streamPendingTools } })
   }
 
-  const detailsCtx = { commandOverride: detailsModeCommandOverride, detailsMode, sections }
+  // Stable identity (the spec table is module-level), so the trail memo holds.
+  const layoutDefaults = layoutSections(ui.layout, ui.design?.layout?.sections)
+  const detailsCtx = { commandOverride: detailsModeCommandOverride, detailsMode, layoutDefaults, live: true, sections }
   let prev = prevMsg
 
   return (
     <>
-      {blocks.map(block => {
+      {blocks.map((block, index) => {
+        // Only the NEWEST block is `live`. A block's `live` flag is what keeps a
+        // `live`-mode section open, so passing it to every block left each
+        // finished step expanded until the whole turn settled — one open block
+        // per step, stacked. With it only on the last block, a step folds to its
+        // one-line header the moment the next step appears.
+        const isCurrent = index === blocks.length - 1
         const node = (
           <MessageLine
             cols={cols}
@@ -76,7 +85,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             detailsModeCommandOverride={detailsModeCommandOverride}
             isStreaming={block.isStreaming}
             key={block.key}
-            liveDetails
+            layoutSections={layoutDefaults}
+            liveDetails={isCurrent}
             msg={block.msg}
             prev={prev}
             reasoningActive={block.msg.isLiveReasoning === true}

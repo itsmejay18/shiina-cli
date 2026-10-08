@@ -1,6 +1,7 @@
 import { contrastRatio, ensureContrast, mix, parseColor, relativeLuminance, toHex } from '@shiina/shared/color'
 import type { SkinBranding, SkinColors } from '@shiina/shared/skin'
 
+import { DEFAULT_DESIGN, type Design } from './design.js'
 import { desaturate, grayOf, liftForContrast } from './lib/color.js'
 
 export interface ThemeColors {
@@ -63,6 +64,12 @@ export interface ThemeBrand {
 export interface Theme {
   color: ThemeColors
   brand: ThemeBrand
+  /**
+   * Chrome design tokens (spacing, glyphs, borders, status-rule layout).
+   * Ships with the skin's `tui:` section so a restyle is a YAML edit; carried
+   * on the theme so components that already receive `t` need no new plumbing.
+   */
+  design: Design
   bannerLogo: string
   bannerHero: string
 }
@@ -252,13 +259,13 @@ export function themeToneHex(tone: string): string {
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
-  name: 'Shiina Agent',
-  icon: '★',
-  prompt: '❯',
+  name: 'Shiina',
+  icon: '›',
+  prompt: '>',
   welcome: 'Type your message or /help for commands.',
   goodbye: 'Goodbye!',
-  tool: '┊',
-  helpHeader: '(^_^)? Commands'
+  tool: '›',
+  helpHeader: 'Commands'
 }
 
 const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
@@ -303,17 +310,17 @@ export interface ThemeSeeds {
 }
 
 const DIFF_DARK = {
-  diffAdded: 'rgb(220,255,220)',
-  diffRemoved: 'rgb(255,220,220)',
-  diffAddedWord: 'rgb(36,138,61)',
-  diffRemovedWord: 'rgb(207,34,46)'
+  diffAdded: 'rgb(28,46,36)',
+  diffRemoved: 'rgb(50,29,36)',
+  diffAddedWord: 'rgb(134,239,172)',
+  diffRemovedWord: 'rgb(252,165,165)'
 }
 
 const DIFF_LIGHT = {
-  diffAdded: 'rgb(200,240,200)',
-  diffRemoved: 'rgb(240,200,200)',
-  diffAddedWord: 'rgb(27,94,32)',
-  diffRemovedWord: 'rgb(183,28,28)'
+  diffAdded: 'rgb(220,245,225)',
+  diffRemoved: 'rgb(254,226,226)',
+  diffAddedWord: 'rgb(22,101,52)',
+  diffRemovedWord: 'rgb(153,27,27)'
 }
 
 export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
@@ -370,26 +377,23 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
 }
 
 export const DARK_SEEDS: ThemeSeeds = {
-  accent: '#38bdf8',
-  // The classic Shiina navy surfaces are IDENTITY, not derivation drift —
-  // keep them as explicit fill seeds (the ladder derives them for skins
-  // that don't care).
-  activeRow: '#243b55',
-  bg: '#101014',
-  border: '#3b82f6',
-  error: '#ef5350',
-  ok: '#4caf50',
-  primary: '#60a5fa',
-  prompt: '#FFF8DC',
-  selection: '#1e3a5f',
-  shellDollar: '#38bdf8',
-  statusBad: '#ef5350',
-  statusCritical: '#FF6B6B',
-  statusGood: '#8FBC8F',
-  statusWarn: '#60a5fa',
-  surface: '#1a1a2e',
-  text: '#FFF8DC',
-  warn: '#38bdf8'
+  accent: '#8fd694',
+  activeRow: '#3a3a3a',
+  bg: '#181825',
+  border: '#4b4b4b',
+  error: '#f7768e',
+  ok: '#8fd694',
+  primary: '#8fd694',
+  prompt: '#8fd694',
+  selection: '#3a3a3a',
+  shellDollar: '#7aa2f7',
+  statusBad: '#f7768e',
+  statusCritical: '#f7768e',
+  statusGood: '#8fd694',
+  statusWarn: '#e0af68',
+  surface: '#2a2a2a',
+  text: '#d4d4d4',
+  warn: '#e0af68'
 }
 
 // Light-terminal seeds: darker golds/ambers that stay legible on white.
@@ -418,17 +422,19 @@ export const LIGHT_SEEDS: ThemeSeeds = {
 }
 
 export const DARK_THEME: Theme = {
-  color: buildPalette(DARK_SEEDS, false),
-  brand: BRAND,
+  bannerHero: '',
   bannerLogo: '',
-  bannerHero: ''
+  brand: BRAND,
+  color: buildPalette(DARK_SEEDS, false),
+  design: DEFAULT_DESIGN
 }
 
 export const LIGHT_THEME: Theme = {
-  color: buildPalette(LIGHT_SEEDS, true),
-  brand: BRAND,
+  bannerHero: '',
   bannerLogo: '',
-  bannerHero: ''
+  brand: BRAND,
+  color: buildPalette(LIGHT_SEEDS, true),
+  design: DEFAULT_DESIGN
 }
 
 // ── Background-aware readability adaptation ─────────────────────────
@@ -843,7 +849,8 @@ export function fromSkin(
   bannerLogo = '',
   bannerHero = '',
   toolPrefix = '',
-  helpHeader = ''
+  helpHeader = '',
+  design: Design = DEFAULT_DESIGN
 ): Theme {
   // Polarity: the skin's own canvas when it authors one (see skinIsLight);
   // otherwise live host detection (not the module-load snapshot — by the time
@@ -963,7 +970,8 @@ export function fromSkin(
       },
 
       bannerLogo,
-      bannerHero
+      bannerHero,
+      design
     },
     process.env,
     isLight

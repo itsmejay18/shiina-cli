@@ -108,9 +108,9 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   const overflow = rawLines.length - shown.length
 
   return (
-    <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
+    <Box borderColor={t.color.warn} borderStyle={t.design.borders.alert} flexDirection="column" paddingX={t.design.spacing.insetPadX}>
       <Text bold color={t.color.warn}>
-        ⚠ approval required · {req.description}
+        {t.design.glyphs.alert} approval required · {req.description}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -132,7 +132,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
       {opts.map((o, i) => (
         <Text key={o}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
-            {sel === i ? '▸ ' : '  '}
+            {sel === i ? `${t.design.glyphs.active} ` : '  '}
             {i + 1}. {LABELS[o]}
           </Text>
         </Text>
@@ -316,7 +316,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         {batch.map((q, i) => {
           const answer = answers[q.qid]
           const isActive = i === active
-          const marker = answer !== undefined ? '✓' : isActive ? '▸' : '·'
+          const marker = answer !== undefined ? t.design.glyphs.check : isActive ? t.design.glyphs.active : t.design.glyphs.pending
 
           return (
             <Box flexDirection="column" key={q.qid}>
@@ -353,7 +353,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
                     {[...activeChoices, 'Other (type your answer)'].map((c, ci) => (
                       <Text key={ci}>
                         <Text color={t.color.muted} {...chipRowProps(t, sel === ci)}>
-                          {sel === ci ? '▸ ' : '  '}
+                          {sel === ci ? `${t.design.glyphs.active} ` : '  '}
                           {ci + 1}. {c}
                         </Text>
                       </Text>
@@ -389,7 +389,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         </Box>
 
         <Text color={t.color.muted}>
-          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
+          Enter send{t.design.glyphs.dotSeparator}Esc {choices.length ? 'back' : 'cancel'}{t.design.glyphs.dotSeparator.trimEnd()}{' '}
           {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
         </Text>
       </Box>
@@ -403,7 +403,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
       {[...choices, 'Other (type your answer)'].map((c, i) => (
         <Text key={i}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
-            {sel === i ? '▸ ' : '  '}
+            {sel === i ? `${t.design.glyphs.active} ` : '  '}
             {i + 1}. {c}
           </Text>
         </Text>
@@ -449,9 +449,9 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   ]
 
   return (
-    <Box borderColor={accent} borderStyle="double" flexDirection="column" paddingX={1}>
+    <Box borderColor={accent} borderStyle={t.design.borders.alert} flexDirection="column" paddingX={t.design.spacing.insetPadX}>
       <Text bold color={accent}>
-        {req.danger ? '⚠' : '?'} {req.title}
+        {req.danger ? t.design.glyphs.alert : t.design.glyphs.waiting} {req.title}
       </Text>
 
       {req.detail ? (
@@ -466,7 +466,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 
       {rows.map((row, i) => (
         <Text key={row.label}>
-          <Text color={sel === i ? accent : t.color.muted}>{sel === i ? '▸ ' : '  '}</Text>
+          <Text color={sel === i ? accent : t.color.muted}>{sel === i ? `${t.design.glyphs.active} ` : '  '}</Text>
           <Text color={sel === i ? row.color : t.color.muted}>{row.label}</Text>
         </Text>
       ))}

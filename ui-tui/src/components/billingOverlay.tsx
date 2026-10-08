@@ -40,7 +40,7 @@ export function BillingOverlay({ onClose, onPatch, overlay, t }: BillingOverlayP
   const { ctx, screen, state: s } = overlay
 
   return (
-    <Box borderColor={t.color.accent} borderStyle="round" flexDirection="column" paddingX={1}>
+    <Box borderColor={t.color.accent} borderStyle={t.design.borders.panel} flexDirection="column" paddingX={t.design.spacing.insetPadX}>
       {screen === 'overview' && <OverviewScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
       {screen === 'buy' && <BuyScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
       {screen === 'confirm' && (
@@ -145,7 +145,7 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       {s.org_name && (
         <Text color={t.color.muted}>
           Org: {s.org_name}
-          {s.role ? ` · ${s.role}` : ''}
+          {s.role ? `${t.design.glyphs.dotSeparator}${s.role}` : ''}
         </Text>
       )}
       {/* The shared two-bar dollar usage (plan + top-up), same as /usage and
@@ -226,7 +226,7 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
       onPatch({ state: fresh })
 
       if (fresh.card) {
-        ctx.sys(`✓ Card found: ${fresh.card.display ?? fresh.card.masked} — pick an amount.`)
+        ctx.sys(`${t.design.glyphs.check} Card found: ${fresh.card.display ?? fresh.card.masked} — pick an amount.`)
       } else {
         ctx.sys('Still no card on file — finish adding it on the portal, then check again.')
       }
@@ -550,12 +550,14 @@ function StepUpScreen({
     }
 
     setPhase('resuming')
-    ctx.sys('✓ Remote Spending allowed — resuming your purchase.')
+    ctx.sys(`${t.design.glyphs.check} Remote Spending allowed — resuming your purchase.`)
     void ctx.charge(amount, idempotencyKey).then(outcome => {
       // If the replay STILL can't spend (grant raced/expired or downscoped),
       // say so — don't close on a reassuring line with no charge made.
       if (outcome === 'needs_remote_spending') {
-        ctx.sys('! Remote Spending still needs approval — run /topup to try again. Your card was not charged.')
+        ctx.sys(
+          `${t.design.glyphs.warn} Remote Spending still needs approval — run /topup to try again. Your card was not charged.`
+        )
       }
 
       onClose()
@@ -688,8 +690,9 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const distinctCard = ar?.card?.kind === 'distinct' ? ar.card : null
 
   const distinctCardName = distinctCard
-    ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||
-      'a different card'
+    ? [distinctCard.brand, distinctCard.last4 ? `${t.design.glyphs.dot.repeat(2)}${distinctCard.last4}` : null]
+        .filter(Boolean)
+        .join(' ') || 'a different card'
     : null
 
   const manageCardLabel = 'Use your card on file — manage on portal'
@@ -849,7 +852,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const fieldBox = (label: string, value: string, onChange: (v: string) => void, focused: boolean, key: string) => (
     <Box flexDirection="column" key={key}>
       <Text color={focused ? t.color.label : t.color.muted}>{label}</Text>
-      <Box borderColor={focused ? t.color.accent : t.color.border} borderStyle="round" paddingX={1}>
+      <Box borderColor={focused ? t.color.accent : t.color.border} borderStyle={t.design.borders.panel} paddingX={t.design.spacing.insetPadX}>
         <Text color={t.color.label}>{'$'}</Text>
         <TextInput
           color={t.color.text}
@@ -880,7 +883,9 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       <Text color={t.color.muted}>Automatically add funds when your balance is low.</Text>
       <Text color={t.color.muted}>{cardLine}</Text>
       {distinctCardName && (
-        <Text color={t.color.warn}>⚠ Auto-refill is charging {distinctCardName} — not your card on file.</Text>
+        <Text color={t.color.warn}>
+          {t.design.glyphs.alert} Auto-refill is charging {distinctCardName} — not your card on file.
+        </Text>
       )}
       <Text />
       {fieldBox('When balance falls below:', threshold, setThreshold, row === 0, 'threshold')}

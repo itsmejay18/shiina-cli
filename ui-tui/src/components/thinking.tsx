@@ -1,10 +1,13 @@
 import { Box, NoSelect, Text } from '@shiina/ink'
 import { compactNumber } from '@shiina/shared/format'
+import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
-import { THINKING_COT_MAX } from '../config/limits.js'
-import { sectionMode } from '../domain/details.js'
+import { $uiState } from '../app/uiStore.js'
+import { THINKING_COT_MAX, THINKING_TRAIL_MAX_CHARS, THINKING_TRAIL_MAX_LINES } from '../config/limits.js'
+import { type DesignIndent, headerEmphasis, headerLabel, headerLead } from '../design.js'
+import { opensByDefault, sectionMode } from '../domain/details.js'
 import {
   buildSubagentTree,
   fmtTokens,
@@ -16,6 +19,7 @@ import {
   widthByDepth
 } from '../lib/subagentTree.js'
 import {
+  TOOL_TRAIL_ERR,
   boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
@@ -28,6 +32,7 @@ import {
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
+import { Md } from './markdown.js'
 import type {
   ActiveTool,
   ActivityItem,
@@ -52,8 +57,8 @@ type TreeRails = readonly boolean[]
 
 const nextTreeRails = (rails: TreeRails, branch: TreeBranch) => [...rails, branch === 'mid']
 
-const treeLead = (rails: TreeRails, branch: TreeBranch) =>
-  `${rails.map(on => (on ? '│ ' : '  ')).join('')}${branch === 'mid' ? '├─ ' : '└─ '}`
+const treeLead = (rails: TreeRails, branch: TreeBranch, indent: DesignIndent) =>
+  `${rails.map(on => (on ? indent.stem : indent.unit)).join('')}${branch === 'mid' ? indent.branch : indent.last}`
 
 // ── Primitives ───────────────────────────────────────────────────────
 
@@ -72,7 +77,7 @@ function TreeRow({
   stemDim?: boolean
   t: Theme
 }) {
-  const lead = treeLead(rails, branch)
+  const lead = treeLead(rails, branch, t.design.indent)
 
   return (
     <Box>
@@ -152,11 +157,19 @@ function TreeNode({
 }
 
 export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
+  // The active design picks the animation set. Motion is a large part of why
+  // two TUIs read as different apps — the same frame with a different spinner
+  // vocabulary reads as a different product.
+  const frames = useStore($uiState).design?.spinner?.[variant === 'tool' ? 'tool' : 'think']
+
   const spin = useMemo(() => {
-    const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
+    const chosen = frames?.length ? (frames as BrailleSpinnerName[]) : variant === 'tool' ? TOOL : THINK
+    // A design naming an unknown animation must not crash the frame: fall back
+    // to the built-in pick rather than dereferencing undefined.frames.
+    const raw = spinners[pick(chosen)] ?? spinners[pick(variant === 'tool' ? TOOL : THINK)]
 
     return { ...raw, frames: raw.frames.map(f => [...f][0] ?? '⠀') }
-  }, [variant])
+  }, [frames, variant])
 
   const [frame, setFrame] = useState(0)
 
@@ -188,6 +201,15 @@ function Detail({
   rails = [],
   t
 }: DetailRow & { branch?: TreeBranch; rails?: TreeRails; t: Theme }) {
+  if (typeof content === 'string' && content.includes('```diff')) {
+    return (
+      <TreeRow branch={branch} rails={rails} t={t}>
+        <Box flexDirection="column">
+          <Md cols={80} t={t} text={content} />
+        </Box>
+      </TreeRow>
+    )
+  }
   return <TreeTextRow branch={branch} color={color} content={content} dimColor={dimColor} rails={rails} t={t} />
 }
 
@@ -229,6 +251,13 @@ function StreamCursor({
   )
 }
 
+/** Section-title color: the identity color at full strength, with error/warn
+ *  overriding it when the row is reporting a problem. Extracted so the
+ *  hierarchy (header loud, body quiet) is pinned by a test rather than by the
+ *  rendered escapes, which the test harness cannot force. */
+export const chevronColor = (t: Theme, tone: 'dim' | 'error' | 'warn' = 'dim'): string =>
+  tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.accent
+
 function Chevron({
   count,
   onClick,
@@ -246,14 +275,18 @@ function Chevron({
   title: string
   tone?: 'dim' | 'error' | 'warn'
 }) {
-  const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
+  // Section titles are the navigation, so they carry the identity color at full
+  // strength; the chevron keeps it too. They used to render muted+dim, which put
+  // the body text (reasoning) visually above its own header.
+  const color = chevronColor(t, tone)
+  const header = t.design.header
 
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
-      <Text color={color} dim={tone === 'dim'}>
-        <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-        {title}
-        {typeof count === 'number' ? ` (${count})` : ''}
+      <Text color={color} {...headerEmphasis(header)}>
+        {headerLead(header, open, t.design.glyphs)}
+        {headerLabel(header, title)}
+        {typeof count === 'number' ? <Text color={t.color.muted}> ({count})</Text> : ''}
         {suffix ? (
           <Text color={t.color.statusFg} dim>
             {'  '}
@@ -388,7 +421,7 @@ function SubagentAccordion({
     }
   }
 
-  const suffix = rollupBits.join(' · ')
+  const suffix = rollupBits.join(t.design.glyphs.dotSeparator)
 
   const thinkingText = item.thinking.join('\n')
   const hasThinking = Boolean(thinkingText)
@@ -464,7 +497,7 @@ function SubagentAccordion({
               color={t.color.text}
               content={
                 <>
-                  <Text color={t.color.tool}>● </Text>
+                  <Text color={t.color.tool}>{`${t.design.glyphs.bullet} `}</Text>
                   {line}
                 </>
               }
@@ -615,9 +648,47 @@ function SubagentAccordion({
 
 // ── Thinking ─────────────────────────────────────────────────────────
 
+/** Window a chain of thought for display: at most `maxLines` rows and at most
+ *  `THINKING_TRAIL_MAX_CHARS` characters, always ending at the newest text — the
+ *  window slides, old lines unrender as new ones arrive, like `tail -f` for
+ *  reasoning. Lines alone do not bound height (one logical line can wrap into a
+ *  wall) and characters alone do not bound rows, so both are applied. Pure so
+ *  the window is testable without a renderer. */
+export const capThinkingLines = (allLines: string[], maxLines?: number): { hidden: number; lines: string[] } => {
+  const filtered = allLines.filter(line => !isThinkingStatusLine(line))
+
+  if (!maxLines) {
+    return { hidden: 0, lines: filtered }
+  }
+
+  const windowed = filtered.slice(-maxLines)
+  const hidden = Math.max(0, filtered.length - windowed.length)
+
+  let budget = THINKING_TRAIL_MAX_CHARS
+
+  const lines = windowed
+    .map(line => {
+      if (budget <= 0) {
+        return null
+      }
+
+      const room = Math.min(line.length, budget)
+
+      budget -= room
+
+      // A line too long for the budget keeps its END — the newest text is what
+      // the window is for — with a leading marker for the clipped head.
+      return room < line.length ? `…${line.slice(line.length - Math.max(0, room - 1))}` : line
+    })
+    .filter((line): line is string => line !== null)
+
+  return { hidden, lines }
+}
+
 export const Thinking = memo(function Thinking({
   active = false,
   branch = 'last',
+  maxLines,
   mode = 'truncated',
   rails = [],
   reasoning,
@@ -626,6 +697,8 @@ export const Thinking = memo(function Thinking({
 }: {
   active?: boolean
   branch?: TreeBranch
+  /** Cap on rendered lines; the window always ends at the newest line. */
+  maxLines?: number
   mode?: ThinkingMode
   rails?: TreeRails
   reasoning: string
@@ -638,7 +711,9 @@ export const Thinking = memo(function Thinking({
     return mode === 'full' ? boundedLiveRenderText(raw) : raw
   }, [mode, reasoning])
 
-  const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
+  const allLines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
+
+  const { hidden, lines } = useMemo(() => capThinkingLines(allLines, maxLines), [allLines, maxLines])
 
   if (!preview && !active) {
     return null
@@ -651,31 +726,33 @@ export const Thinking = memo(function Thinking({
       <Box flexDirection="column" flexGrow={1}>
         {preview ? (
           mode === 'full' ? (
-            lines.map((line, index) => {
-              const isStatus = isThinkingStatusLine(line)
-              const color = isStatus ? greenColor : t.color.thinking
-
-              return (
-                <Text color={color} key={index} wrap="wrap-trim">
+            <>
+              {hidden > 0 ? (
+                <Text color={t.color.muted} dim wrap="truncate-end">
+                  {`… +${hidden} earlier line${hidden === 1 ? '' : 's'}`}
+                </Text>
+              ) : null}
+              {lines.map((line, index) => (
+                <Text color={t.color.thinking} dim key={index} wrap="wrap-trim">
                   {line || ' '}
                   {index === lines.length - 1 ? (
-                    <StreamCursor color={color} streaming={streaming} visible={active} />
+                    <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
                   ) : null}
                 </Text>
-              )
-            })
+              ))}
+            </>
           ) : (
-            <Text color={isThinkingStatusLine(preview) ? greenColor : t.color.thinking} wrap="truncate-end">
+            <Text color={t.color.thinking} dim wrap="truncate-end">
               {preview}
               <StreamCursor
-                color={isThinkingStatusLine(preview) ? greenColor : t.color.thinking}
+                color={t.color.thinking}
                 streaming={streaming}
                 visible={active}
               />
             </Text>
           )
         ) : (
-          <Text color={t.color.thinking}>
+          <Text color={t.color.thinking} dim>
             <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
           </Text>
         )}
@@ -698,11 +775,13 @@ export const ToolTrail = memo(function ToolTrail({
   busy = false,
   commandOverride = false,
   detailsMode = 'collapsed',
+  layoutSections,
   outcome = '',
   preferExpandedThinking = false,
   reasoningActive = false,
   reasoning = '',
   reasoningAlwaysVisible = false,
+  reasoningDuration = 0,
   reasoningTokens,
   reasoningStreaming = false,
   sections,
@@ -716,6 +795,9 @@ export const ToolTrail = memo(function ToolTrail({
   busy?: boolean
   commandOverride?: boolean
   detailsMode?: DetailsMode
+  /** Default progress visibility contributed by the active TUI layout — the
+   *  layer between the user's explicit `sections` and the built-in defaults. */
+  layoutSections?: SectionVisibility
   outcome?: string
   preferExpandedThinking?: boolean
   reasoningActive?: boolean
@@ -724,6 +806,7 @@ export const ToolTrail = memo(function ToolTrail({
   // `visible.thinking === 'hidden'` — they're the mixture-of-agents process
   // the user opted into, not private model reasoning (#64657).
   reasoningAlwaysVisible?: boolean
+  reasoningDuration?: number
   reasoningTokens?: number
   reasoningStreaming?: boolean
   sections?: SectionVisibility
@@ -736,16 +819,31 @@ export const ToolTrail = memo(function ToolTrail({
 }) {
   const visible = useMemo(
     () => ({
-      thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
-      tools: sectionMode('tools', detailsMode, sections, commandOverride),
-      subagents: sectionMode('subagents', detailsMode, sections, commandOverride),
-      activity: sectionMode('activity', detailsMode, sections, commandOverride)
+      thinking: sectionMode('thinking', detailsMode, sections, commandOverride, layoutSections),
+      tools: sectionMode('tools', detailsMode, sections, commandOverride, layoutSections),
+      subagents: sectionMode('subagents', detailsMode, sections, commandOverride, layoutSections),
+      activity: sectionMode('activity', detailsMode, sections, commandOverride, layoutSections)
     }),
-    [commandOverride, detailsMode, sections]
+    [commandOverride, detailsMode, layoutSections, sections]
   )
 
-  const thinkingDefaultExpanded =
-    visible.thinking === 'expanded' && (preferExpandedThinking || commandOverride || sections?.thinking === 'expanded')
+  // Open defaults come from the section MODE (design/layout/YAML-driven):
+  // `live` opens the running turn's block and folds it once settled,
+  // `expanded` keeps it open for good. No mode is hardcoded here — see
+  // `layout.sections` in the design YAML (designs/codex.yaml).
+  const thinkingDefaultExpanded = opensByDefault(visible.thinking, preferExpandedThinking)
+  const toolsDefaultExpanded = opensByDefault(visible.tools, preferExpandedThinking)
+  const subagentsDefaultExpanded = opensByDefault(visible.subagents, preferExpandedThinking)
+
+  // An explicit `/details` expand or design maxLines=null/0 shows the whole chain of thought;
+  // otherwise respect the design's maxLines (defaults to undefined = full/unlimited).
+  const designMaxLines = t.design.thinking?.maxLines
+  const thinkingMaxLines =
+    commandOverride || sections?.thinking === 'expanded'
+      ? undefined
+      : designMaxLines === 0 || designMaxLines === null
+        ? undefined
+        : designMaxLines ?? undefined
 
   const [now, setNow] = useState(() => Date.now())
   // Local toggles own the open state once mounted.  Init from the resolved
@@ -762,10 +860,11 @@ export const ToolTrail = memo(function ToolTrail({
   // below deliberately does NOT re-apply it, so a manual collapse still
   // sticks (see the no-OR-at-effect-time warning above, #14968).
   const [openThinking, setOpenThinking] = useState(thinkingDefaultExpanded || reasoningAlwaysVisible)
-  const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
-  const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
-  const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
-  const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
+  const [openTools, setOpenTools] = useState(toolsDefaultExpanded)
+  const [openSubagents, setOpenSubagents] = useState(subagentsDefaultExpanded)
+  const [deepSubagents, setDeepSubagents] = useState(subagentsDefaultExpanded)
+  const activityDefaultExpanded = opensByDefault(visible.activity, preferExpandedThinking)
+  const [openMeta, setOpenMeta] = useState(activityDefaultExpanded)
 
   useEffect(() => {
     if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
@@ -781,9 +880,15 @@ export const ToolTrail = memo(function ToolTrail({
   // this re-sync was clobbering the reasoningAlwaysVisible mount value above
   // right after mount, collapsing a just-opened MoA reference panel under
   // `thinking: hidden` before the user ever saw it (#64701). Skip only the
-  // very first run; every subsequent `visible` change (the case this effect
-  // exists for) still re-syncs without the override, so a manual collapse
-  // still sticks per the no-OR-at-effect-time rule above.
+  // very first run; every subsequent mode change (the case this effect exists
+  // for) still re-syncs without the override, so a manual collapse still
+  // sticks per the no-OR-at-effect-time rule above.
+  //
+  // Deps are the RESOLVED MODES, never the `visible` object: `layoutSections()`
+  // returns a fresh object every render (appLayout computes it inline), so an
+  // object dep made this fire on every repaint and reset the panel to its
+  // default — a panel the user opened folded itself again a few hundred ms
+  // later, mid-turn and while idle.
   const skippedInitialSync = useRef(false)
   useEffect(() => {
     if (!skippedInitialSync.current) {
@@ -793,10 +898,10 @@ export const ToolTrail = memo(function ToolTrail({
     }
 
     setOpenThinking(thinkingDefaultExpanded)
-    setOpenTools(visible.tools === 'expanded')
-    setOpenSubagents(visible.subagents === 'expanded')
-    setOpenMeta(visible.activity === 'expanded')
-  }, [thinkingDefaultExpanded, visible])
+    setOpenTools(toolsDefaultExpanded)
+    setOpenSubagents(subagentsDefaultExpanded)
+    setOpenMeta(activityDefaultExpanded)
+  }, [activityDefaultExpanded, subagentsDefaultExpanded, thinkingDefaultExpanded, toolsDefaultExpanded])
 
   // `collapsed` is an auto preference: keep the panel open while reasoning
   // is live (stream pulses keep `reasoningActive` true) and collapse it the
@@ -813,8 +918,9 @@ export const ToolTrail = memo(function ToolTrail({
   }, [thinkingAuto, reasoningActive])
 
   // The loop finished: collapse every section (thinking, tools, subagents, activity) so the
-  // panel reads as one compact summary instead of a wall of finished steps. A section the user
-  // pinned open via /details stays open; an MoA reference panel is never touched.
+  // whole process reads as one compact summary and only the final message is left in the
+  // open. A section the user pinned open via /details stays open; an MoA reference panel is
+  // never touched. The next set opens itself (it is the live one).
   const wasBusy = useRef(busy)
   useEffect(() => {
     const finished = wasBusy.current && !busy
@@ -824,23 +930,23 @@ export const ToolTrail = memo(function ToolTrail({
       return
     }
 
-    if (thinkingAuto) {
+    if (thinkingAuto || !thinkingDefaultExpanded) {
       setOpenThinking(false)
     }
 
-    if (visible.tools !== 'expanded') {
+    if (!toolsDefaultExpanded) {
       setOpenTools(false)
     }
 
-    if (visible.subagents !== 'expanded') {
+    if (!subagentsDefaultExpanded) {
       setOpenSubagents(false)
       setDeepSubagents(false)
     }
 
-    if (visible.activity !== 'expanded') {
+    if (!opensByDefault(visible.activity, false)) {
       setOpenMeta(false)
     }
-  }, [busy, thinkingAuto, visible])
+  }, [busy, subagentsDefaultExpanded, thinkingAuto, visible])
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
@@ -852,7 +958,10 @@ export const ToolTrail = memo(function ToolTrail({
   const spawnTotals = useMemo(() => treeTotals(spawnTree), [spawnTree])
   const spawnWidths = useMemo(() => widthByDepth(spawnTree), [spawnTree])
   const spawnSpark = useMemo(() => sparkline(spawnWidths), [spawnWidths])
-  const spawnSummaryLabel = useMemo(() => formatSpawnSummary(spawnTotals), [spawnTotals])
+  const spawnSummaryLabel = useMemo(
+    () => formatSpawnSummary(spawnTotals, t.design.glyphs.dotSeparator),
+    [spawnTotals, t.design.glyphs.dotSeparator]
+  )
 
   if (
     !busy &&
@@ -878,7 +987,7 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (parsed) {
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.text,
+        color: parsed.mark === TOOL_TRAIL_ERR ? t.color.error : t.color.text,
         content: parsed.call,
         details: [],
         key: `tr-${i}`,
@@ -887,9 +996,9 @@ export const ToolTrail = memo(function ToolTrail({
 
       if (parsed.detail) {
         pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
+          color: parsed.mark === TOOL_TRAIL_ERR ? t.color.error : t.color.muted,
           content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
+          dimColor: parsed.mark !== TOOL_TRAIL_ERR,
           key: `tr-${i}-d`
         })
       }
@@ -958,7 +1067,12 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const item of activity.slice(-4)) {
-    const glyph = item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·'
+    const glyph =
+      item.tone === 'error'
+        ? t.design.glyphs.cross
+        : item.tone === 'warn'
+          ? t.design.glyphs.warn
+          : t.design.glyphs.pending
     const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.muted
     meta.push({ color, content: `${glyph} ${item.text}`, dimColor: item.tone === 'info', key: `a-${item.id}` })
   }
@@ -981,7 +1095,6 @@ export const ToolTrail = memo(function ToolTrail({
   const toolTokensLabel =
     toolTokens !== undefined && toolTokens > 0 ? `~${compactNumber(toolTokens)} tokens` : undefined
 
-  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${compactNumber(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
@@ -1023,7 +1136,7 @@ export const ToolTrail = memo(function ToolTrail({
       <Box flexDirection="column">
         {alerts.map(i => (
           <Text color={i.tone === 'error' ? t.color.error : t.color.warn} key={`ha-${i.id}`}>
-            {i.tone === 'error' ? '✗' : '!'} {i.text}
+            {i.tone === 'error' ? t.design.glyphs.cross : t.design.glyphs.warn} {i.text}
           </Text>
         ))}
       </Box>
@@ -1096,16 +1209,19 @@ export const ToolTrail = memo(function ToolTrail({
           }}
         >
           <Text color={t.color.muted} dim={!thinkingLive}>
-            <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
-            {thinkingLive ? (
-              <Text bold color={t.color.text}>
-                Thinking
-              </Text>
-            ) : (
-              <Text color={t.color.muted} dim>
-                Thinking
-              </Text>
-            )}
+            <Text color={t.color.accent}>
+              {headerLead(t.design.header, openThinking, t.design.glyphs)}
+            </Text>
+            <Text {...headerEmphasis(t.design.header)} color={t.color.accent}>
+              {headerLabel(
+                t.design.header,
+                thinkingLive
+                  ? 'Thinking'
+                  : reasoningDuration > 0
+                    ? `thought for ${reasoningDuration.toFixed(1)}s`
+                    : 'Thought'
+              )}
+            </Text>
             {thinkingTokensLabel ? (
               <Text color={t.color.statusFg} dim>
                 {'  '}
@@ -1121,6 +1237,7 @@ export const ToolTrail = memo(function ToolTrail({
         <Thinking
           active={reasoningActive}
           branch="last"
+          maxLines={thinkingMaxLines}
           mode="full"
           rails={rails}
           reasoning={busy ? reasoning : cot}
@@ -1169,7 +1286,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.tool}>● </Text>
+                      <Text color={t.color.tool}>{`${t.design.glyphs.bullet} `}</Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>
@@ -1267,39 +1384,88 @@ export const ToolTrail = memo(function ToolTrail({
     })
   }
 
-  const topCount = panels.length + (totalTokensLabel ? 1 : 0)
+  if (panels.length === 0) {
+    return outcome ? (
+      <Box marginTop={1}>
+        <Text color={t.color.muted} dim>
+          {t.design.glyphs.dotSeparator.trim()} {outcome}
+        </Text>
+      </Box>
+    ) : null
+  }
+  // Only a section that actually HAS content may hold the unified block open —
+  // a stale/leftover flag on an absent section used to force every settled row
+  // open (the design's `subagents: expanded` default did exactly that).
+  const isSingleSetOpen =
+    (hasThinking && openThinking) ||
+    (hasTools && openTools) ||
+    (hasSubagents && openSubagents) ||
+    (activity.length > 0 && openMeta)
+
+  const toggleUnified = () => {
+    const next = !isSingleSetOpen
+    if (hasThinking) setOpenThinking(next)
+    if (hasTools) setOpenTools(next)
+    if (hasSubagents) setOpenSubagents(next)
+    if (activity.length > 0) setOpenMeta(next)
+  }
+
+    const unifiedSummary = [
+      hasThinking ? (thinkingTokensLabel || 'Thinking') : null,
+      hasTools ? `${groups.length} tool${groups.length === 1 ? '' : 's'}` : null,
+      hasSubagents ? `${spawnTotals.descendantCount} agent${spawnTotals.descendantCount === 1 ? '' : 's'}` : null,
+    ].filter(Boolean).join(`, `)
+
+    const unifiedTitle = (() => {
+      if (hasThinking && !hasTools && !hasSubagents) {
+        return thinkingLive
+          ? 'Thinking'
+          : reasoningDuration > 0
+            ? `thought for ${reasoningDuration.toFixed(1)}s`
+            : 'Thought'
+      }
+      return busy ? 'In progress' : 'Steps'
+    })()
 
   return (
     <Box flexDirection="column">
-      {panels.map((panel, index) => (
-        <TreeNode
-          branch={index === topCount - 1 ? 'last' : 'mid'}
-          header={panel.header}
-          key={panel.key}
-          open={panel.open}
-          t={t}
-        >
-          {panel.render}
-        </TreeNode>
-      ))}
-      {totalTokensLabel ? (
-        <TreeTextRow
-          branch="last"
-          color={t.color.statusFg}
-          content={
-            <>
-              <Text color={t.color.accent}>Σ </Text>
-              {totalTokensLabel}
-            </>
-          }
-          dimColor
-          t={t}
-        />
-      ) : null}
+      <TreeNode
+        branch="last"
+        header={
+          <Box onClick={toggleUnified}>
+            <Text color={t.color.muted} dim={!busy}>
+              <Text color={t.color.accent}>
+                {headerLead(t.design.header, isSingleSetOpen, t.design.glyphs)}
+              </Text>
+              <Text {...headerEmphasis(t.design.header)} color={t.color.accent}>
+                {headerLabel(t.design.header, unifiedTitle)}
+              </Text>
+              {unifiedSummary ? (
+                <Text color={t.color.statusFg} dim>
+                  {'  '}({unifiedSummary})
+                </Text>
+              ) : null}
+            </Text>
+          </Box>
+        }
+        key="unified-set"
+        open={isSingleSetOpen}
+        t={t}
+      >
+        {rails => (
+          <Box flexDirection="column">
+            {panels.map(panel => (
+              <Box flexDirection="column" key={panel.key}>
+                {panel.render(rails)}
+              </Box>
+            ))}
+          </Box>
+        )}
+      </TreeNode>
       {outcome ? (
         <Box marginTop={1}>
           <Text color={t.color.muted} dim>
-            · {outcome}
+            {t.design.glyphs.dotSeparator.trim()} {outcome}
           </Text>
         </Box>
       ) : null}

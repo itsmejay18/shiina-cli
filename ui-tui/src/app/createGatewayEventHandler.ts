@@ -7,6 +7,7 @@ import type { StreamDeltaPayload, SubagentStatus, Usage } from '@shiina/shared/g
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
+import { resolveDesignSpec } from '../domain/designSpec.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
   AnyGatewayEvent,
@@ -22,9 +23,10 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
+import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, isThinkingStatusLine } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
+import { designEquals, resolveDesign } from '../design.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -111,7 +113,10 @@ const themeForSkin = (s: GatewaySkin) => {
     s.banner_logo ?? '',
     s.banner_hero ?? '',
     s.tool_prefix ?? '',
-    s.help_header ?? ''
+    s.help_header ?? '',
+    // Chrome restyle rides the same payload as the colours: `tui:` in the skin
+    // YAML (spacing, glyphs, borders, status-rule segment order).
+    resolveDesign(s.tui)
   )
 }
 
@@ -168,7 +173,9 @@ const themesEqual = (a: Theme, b: Theme) => {
     a.brand.name === b.brand.name &&
     a.brand.prompt === b.brand.prompt &&
     a.bannerLogo === b.bannerLogo &&
-    a.bannerHero === b.bannerHero
+    a.bannerHero === b.bannerHero &&
+    // A glyph/segment-only skin edit must still repaint and persist.
+    designEquals(a.design, b.design)
   )
 }
 
@@ -181,7 +188,7 @@ const themesEqual = (a: Theme, b: Theme) => {
 // The text tone resolves through themeToneHex because a limited-palette
 // terminal quantizes it to `ansi256(N)`, which OSC-10 cannot speak.
 const paintTerminalDefaults = (theme: Theme) => {
-  const background = lastSkin?.colors?.background ?? ''
+  const background = theme.design?.colors?.background ?? lastSkin?.colors?.background ?? ''
 
   setTerminalBackground(background)
   setTerminalForeground(isPaintableHex(background) ? themeToneHex(theme.color.text) : '')
@@ -190,6 +197,11 @@ const paintTerminalDefaults = (theme: Theme) => {
 const applySkin = (s: GatewaySkin) => {
   lastSkin = s
   const theme = themeForSkin(s)
+
+  // The design rides the skin payload, so it commits here — BEFORE the theme,
+  // because commitTheme's recompute reads the design already in state and would
+  // otherwise wear the previous one for a frame.
+  patchUiState({ design: resolveDesignSpec(s.design), designs: s.designs ?? [] })
 
   commitTheme(theme)
   paintTerminalDefaults(theme)
@@ -864,9 +876,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
           if (value) {
             const clean = value.trim()
-            if (clean) {
+            if (clean && !isThinkingStatusLine(clean)) {
               const prefix = turnController.reasoningText && !turnController.reasoningText.endsWith('\n') ? '\n\n' : ''
-              turnController.recordReasoningDelta(`${prefix}${clean}\n\n`)
+              turnController.recordReasoningDelta(`${prefix}${clean}`)
             }
           }
         }
@@ -889,6 +901,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (p.kind === 'goal') {
           sys(p.text)
 
+          // The backend's goal lines carry their own leading mark (`✓`/`↻`/`⏸`).
+          // The state brief echoes that protocol rather than rendering chrome,
+          // so it stays paired with the producer's mark, not a design token.
           const brief = p.text.startsWith('✓')
             ? '✓ goal complete'
             : p.text.startsWith('↻')
@@ -1226,10 +1241,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.generating':
-        if (ev.payload?.name) {
-          turnController.pushTrail(`drafting ${ev.payload.name}…`)
-        }
-
         return
 
       case 'reaction':

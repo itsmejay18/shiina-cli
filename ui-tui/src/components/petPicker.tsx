@@ -141,7 +141,7 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {query ? `filter: ${query}` : 'type to filter'} · {view.length} pet{view.length === 1 ? '' : 's'}
+        {query ? `filter: ${query}` : 'type to filter'}{t.design.glyphs.dotSeparator}{view.length} pet{view.length === 1 ? '' : 's'}
       </Text>
 
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
@@ -152,12 +152,12 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
         items.map((pet, i) => {
           const at = offset + i === idx
           const isActive = enabled && pet.slug === active
-          const mark = isActive ? '●' : pet.installed ? '✓' : ' '
+          const mark = isActive ? t.design.glyphs.bullet : pet.installed ? t.design.glyphs.check : ' '
           const tag = pet.installed ? '' : pet.curated ? ' · official' : ''
 
           return (
             <Text color={t.color.muted} {...chipRowProps(t, at)} key={pet.slug} wrap="truncate-end">
-              {at ? '▸ ' : '  '}
+              {at ? `${t.design.glyphs.active} ` : '  '}
               {mark} {pet.displayName}
               <Text color={at ? t.color.accent : t.color.muted}>
                 {' '}

@@ -153,6 +153,7 @@ export interface Msg {
   // reasoning segments from earlier in the turn carry no flag, so the TUI can
   // tell "the reasoning happening right now" apart from finished blocks.
   isLiveReasoning?: boolean
+  thinkingDuration?: number
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
@@ -162,7 +163,7 @@ export interface Msg {
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
-export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
+export type DetailsMode = 'hidden' | 'collapsed' | 'expanded' | 'live'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
 // Per-section overrides for the agent details accordion.  Resolution order

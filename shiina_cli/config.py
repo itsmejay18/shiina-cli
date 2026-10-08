@@ -1,6 +1,7 @@
 """Configuration management for Shiina Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``shiina config`` command."""
 
+import contextvars
 import copy
 import difflib
 import json
@@ -16,10 +17,11 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Iterator, Optional, List, Tuple, Set
 
 import yaml
 
@@ -28,6 +30,9 @@ from shiina_cli.colors import Colors, color
 from shiina_cli import managed_scope
 from shiina_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from shiina_cli.secret_prompt import masked_secret_prompt
+# _sanitize_env_lines lives in env_loader (the dotenv layer's own normaliser) so that
+# _sanitize_env_file_if_needed no longer imports this facade on every existing .env at startup.
+from shiina_cli.env_loader import _sanitize_env_lines
 # Re-export from shiina_constants — canonical definition lives there.
 from shiina_constants import get_shiina_home, get_process_shiina_home  # noqa: F401
 from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
@@ -255,43 +260,12 @@ _EXTRA_ENV_KEYS = frozenset({
 
 
 # ---- Managed mode (NixOS declarative config) ----
-
-_MANAGED_TRUE_VALUES = ("true", "1", "yes")
-_NIX_MANAGED_SYSTEMS = {"nixos", "home-manager"}
-# Only the NixOS module ever wrote a bare "true" or an empty marker.
-_LEGACY_MANAGED_SYSTEM = "nixos"
-# Nix store root; identifies `nix run` / `nix profile install` installs (which don't set
-# SHIINA_MANAGED). Module-level so tests can patch it without touching /nix/store.
-_NIX_STORE = Path("/nix/store")
-# Homebrew is no longer a supported distribution: these markers fall through to git/unknown
-# detection instead of blocking config writes.
-_IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
-# Explicit opt-out (``SHIINA_MANAGED=false``): without this a bool-shaped value became a package
-# manager literally named "false" and is_managed() blocked `shiina update` (#12864).
-_MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
-
-
-def get_managed_system() -> Optional[str]:
-    """Return the package manager owning this install, if any.
-    Signals: SHIINA_MANAGED env var (systemd service) or a ``.managed`` marker file in
-    SHIINA_HOME (NixOS activation script — interactive shells don't see the service env)."""
-    marker = os.getenv("SHIINA_MANAGED", "").strip().lower() or None
-    managed_marker = get_shiina_home() / ".managed"
-    if marker is None and managed_marker.exists():
-        try:
-            marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
-        except OSError:
-            marker = ""
-    if marker is None or marker in _IGNORED_MANAGED_VALUES or marker in _MANAGED_FALSE_VALUES:
-        return None
-    if marker == "" or marker in _MANAGED_TRUE_VALUES:
-        return _LEGACY_MANAGED_SYSTEM
-    return marker
-
-
-def is_managed() -> bool:
-    """Check if Shiina is running in package-manager-managed mode."""
-    return get_managed_system() is not None
+# get_managed_system/is_managed live in shiina_cli/managed_mode.py (a light module: os,
+# pathlib, typing, shiina_constants — it never imports this ~400 ms facade) so light
+# readers can ask is_managed() without pulling config; re-exported here so the internal
+# uses and every `from shiina_cli.config import is_managed` caller keep working.
+from shiina_cli.managed_mode import _NIX_MANAGED_SYSTEMS, _NIX_STORE, get_managed_system
+from shiina_cli.managed_mode import is_managed  # noqa: F401  (re-export for external callers)
 
 
 # Nix installs arrive by several routes (nix run, nix profile, system flake, home-manager) and
@@ -664,7 +638,9 @@ def ensure_shiina_home():
     # empty shell cannot skip the deleted-profile guard.
     from shiina_constants import assert_named_profile_home_live
     assert_named_profile_home_live(home)
-    if key in _SHIINA_HOME_ENSURED:
+    # A deleted home root must be rebuilt: the memo only proves a past pass, not that the
+    # skeleton still exists. Only the root is re-checked, so a removed SUBDIR stays removed.
+    if key in _SHIINA_HOME_ENSURED and home.is_dir():
         return
     from shiina_cli.config_home import initialize_home
     initialize_home(home, _SHIINA_HOME_SUBDIRS, _SHIINA_HOME_ENSURED)
@@ -2055,6 +2031,9 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
 
 _CONFIG_GENERATION: int = 0
 _FAST_READONLY_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+# (generation, readonly_cfg) captured by turn_config_snapshot(); out-of-scope default None.
+_TURN_CONFIG_SNAPSHOT: contextvars.ContextVar[Optional[Tuple[int, Dict[str, Any]]]] = (
+    contextvars.ContextVar("_TURN_CONFIG_SNAPSHOT", default=None))
 
 
 def get_config_generation() -> int:
@@ -2070,6 +2049,24 @@ def bump_config_generation() -> int:
     return _CONFIG_GENERATION
 
 
+@contextmanager
+def turn_config_snapshot() -> Iterator[Dict[str, Any]]:
+    """Scope in which ``load_config_readonly()`` returns one stable object for the whole turn.
+
+    Readers that run once per tool call (tool_search, approval) would otherwise re-validate the
+    file+env signature on every call; the 0.25 s ``_FAST_READONLY_CACHE`` does not cover a turn,
+    so each falls through to ``_load_config_impl``. Inside this scope they share the object loaded
+    here instead. ``save_config()`` (or any other ``bump_config_generation()``) re-arms the loader:
+    the next readonly read falls through to a fresh load. No-op if the caller never reads.
+    """
+    snapshot = _load_config_impl(want_deepcopy=False)
+    token = _TURN_CONFIG_SNAPSHOT.set((get_config_generation(), snapshot))
+    try:
+        yield snapshot
+    finally:
+        _TURN_CONFIG_SNAPSHOT.reset(token)
+
+
 def load_config() -> Dict[str, Any]:
     """Load the merged configuration (DEFAULT_CONFIG + config.yaml + managed scope, env-expanded).
     Cached on the file signature; returns a deepcopy since most call sites mutate the result.
@@ -2080,7 +2077,11 @@ def load_config() -> Dict[str, Any]:
 def load_config_readonly() -> Dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
-    every subsequent caller** — only for code paths that never write to the result."""
+    every subsequent caller** — only for code paths that never write to the result. Inside a
+    ``turn_config_snapshot()`` scope returns the snapshot object (identity-stable for the turn)."""
+    snapshot = _TURN_CONFIG_SNAPSHOT.get()
+    if snapshot is not None and snapshot[0] == _CONFIG_GENERATION:
+        return snapshot[1]
     now = time.monotonic()
     config_path_str = str(get_config_path())
     fast = _FAST_READONLY_CACHE.get(config_path_str)
@@ -2475,19 +2476,6 @@ def invalidate_env_cache() -> None:
     from agent.secret_scope import invalidate_env_file_cache
 
     invalidate_env_file_cache()
-
-
-def _sanitize_env_lines(lines: list) -> list:
-    """Normalize .env line endings/whitespace without changing assignment semantics.
-    Content after the first ``=`` is opaque value data: a known variable name embedded in a value
-    must never be reinterpreted as another assignment, so concatenated lines stay on one line."""
-    sanitized: list[str] = []
-    for line in lines:
-        raw = line.rstrip("\r\n")
-        stripped = raw.strip()
-        # Blank lines and comments are preserved verbatim.
-        sanitized.append((raw if not stripped or stripped.startswith("#") else stripped) + "\n")
-    return sanitized
 
 
 def sanitize_env_file() -> int:
@@ -3935,7 +3923,90 @@ def config_command(args):
     sys.exit(1)
 
 
-# ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----
+# ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (on first read) ----
+
+class _OptionalEnvVars(dict):
+    """``OPTIONAL_ENV_VARS`` plus the entries contributed by provider profiles and platform plugins.
+
+    Those entries come from importing every provider/platform plugin, which drags urllib and the
+    transport modules into ``shiina_cli.config``'s own import (~0.35 s on every command) for a
+    registry only the setup / config / dashboard surfaces read. The expansion therefore runs on
+    first read instead of at import.
+
+    Reads go through the dict methods below. A whole-mapping copy (``dict(OPTIONAL_ENV_VARS)`` /
+    ``{**OPTIONAL_ENV_VARS}``) bypasses Python-level overrides — call
+    :func:`ensure_optional_env_vars` or copy ``.items()`` first.
+    """
+
+    # Instance attribute in __init__; the class default keeps a copy made through the reduce
+    # protocol (deepcopy/pickle, which do not call __init__) working — expansion is idempotent.
+    _expanded = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._expanded = False
+
+    def ensure(self) -> None:
+        if self._expanded:
+            return
+        self._expanded = True  # set first: the injections read this same mapping back
+        _inject_profile_env_vars()
+        _inject_platform_plugin_env_vars()
+
+    def get(self, key, default=None):
+        self.ensure()
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.ensure()
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self.ensure()
+        return super().__contains__(key)
+
+    def __iter__(self):
+        self.ensure()
+        return super().__iter__()
+
+    def __len__(self):
+        self.ensure()
+        return super().__len__()
+
+    def keys(self):
+        self.ensure()
+        return super().keys()
+
+    def values(self):
+        self.ensure()
+        return super().values()
+
+    def items(self):
+        self.ensure()
+        return super().items()
+
+    def copy(self):
+        self.ensure()
+        return super().copy()
+
+    def __eq__(self, other):
+        self.ensure()
+        return super().__eq__(other)
+
+    def __repr__(self):
+        self.ensure()
+        return super().__repr__()
+
+
+def ensure_optional_env_vars() -> Dict[str, Any]:
+    """Materialize the plugin-contributed ``OPTIONAL_ENV_VARS`` entries, then return the mapping."""
+    OPTIONAL_ENV_VARS.ensure()
+    return OPTIONAL_ENV_VARS
+
+
+# Wrap the defaults table so the injections below stay lazy (see _OptionalEnvVars).
+OPTIONAL_ENV_VARS = _OptionalEnvVars(OPTIONAL_ENV_VARS)
+
 
 def _inject_profile_env_vars() -> None:
     """Expose env_vars of every ``auth_type="api_key"`` provider in providers/ via OPTIONAL_ENV_VARS
@@ -3959,9 +4030,6 @@ def _inject_profile_env_vars() -> None:
                     "advanced": True}
     except Exception:
         pass
-
-
-_inject_profile_env_vars()
 
 
 def _platform_plugin_manifests():
@@ -4010,9 +4078,6 @@ def _inject_platform_plugin_env_vars() -> None:
                     "category": meta.get("category") or "messaging"}
     except Exception:
         pass
-
-
-_inject_platform_plugin_env_vars()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

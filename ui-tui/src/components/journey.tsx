@@ -139,6 +139,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const rows = Math.max(16, (stdout?.rows ?? 30) - 2)
   const chartRows = Math.max(5, Math.min(MAX_CHART_ROWS, Math.floor(rows * 0.32)))
   const page = Math.max(4, rows - 6)
+  const dot = t.design.glyphs.dotSeparator
 
   const palette = deriveStarmapPalette(t.color.primary, t.color.text)
 
@@ -409,7 +410,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     const body = activeNode.body ? activeNode.body.split(/\r?\n/) : ['No additional detail recorded yet.']
 
     return (
-      <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
+      <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={t.design.spacing.overlayPadX} paddingY={t.design.spacing.overlayPadY}>
         <Box flexDirection="column" marginBottom={1}>
           <Text wrap="truncate-end">
             <Text bold color={fadeInk(palette, activeNode.style, 1)}>
@@ -417,7 +418,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
             </Text>
           </Text>
           <Text color={t.color.muted}>
-            {activeBucket.label} · {activeNode.meta}
+            {activeBucket.label}{dot}{activeNode.meta}
           </Text>
         </Box>
 
@@ -438,7 +439,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
         <Footer>
           <StatusLines confirm={confirmDelete} label={activeNode.fullLabel || activeNode.label} notice={notice} t={t} />
-          <Hint t={t}>↑↓/jk scroll · PgUp/PgDn page · e edit · d delete · Esc/← back · q close</Hint>
+          <Hint t={t}>↑↓/jk scroll{dot}PgUp/PgDn page{dot}e edit{dot}d delete{dot}Esc/← back{dot}q close</Hint>
         </Footer>
       </Box>
     )
@@ -452,7 +453,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const start = windowStart(cursor, tree.length, listH)
 
   return (
-    <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
+    <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={t.design.spacing.overlayPadX} paddingY={t.design.spacing.overlayPadY}>
       <Box flexDirection="column" marginBottom={1}>
         <Text wrap="truncate-end">
           <Text bold color={t.color.primary}>
@@ -506,10 +507,10 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
           notice={notice}
           t={t}
         />
-        {!confirmDelete && !notice && data.summary.length ? <Hint t={t}>{data.summary.join(' · ')}</Hint> : null}
+        {!confirmDelete && !notice && data.summary.length ? <Hint t={t}>{data.summary.join(dot)}</Hint> : null}
         <Hint t={t}>
-          ↑↓/jk move{activeNode?.body ? ' · Enter/→ open' : ''}
-          {activeNode ? ' · e edit · d delete' : ''} · g/G top/bottom · q close
+          ↑↓/jk move{activeNode?.body ? `${dot}Enter/→ open` : ''}
+          {activeNode ? `${dot}e edit${dot}d delete` : ''}{dot}g/G top/bottom{dot}q close
         </Hint>
       </Footer>
     </Box>
@@ -517,6 +518,8 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 }
 
 function TreeLine({ active, palette, row, t }: { active: boolean; palette: StarmapPalette; row: TreeRow; t: Theme }) {
+  const dot = t.design.glyphs.dotSeparator
+
   if (row.kind === 'gap') {
     return <Text> </Text>
   }
@@ -531,7 +534,7 @@ function TreeLine({ active, palette, row, t }: { active: boolean; palette: Starm
           { color: bucket.color ? fadeHex(palette, bucket.color, 0.85) : t.color.label, text: bucket.label },
           {
             color: t.color.muted,
-            text: ` · ${bucket.skills} skills · ${bucket.memories} memories${bucket.category ? ` · ${bucket.category}` : ''}`
+            text: `${dot}${bucket.skills} skills${dot}${bucket.memories} memories${bucket.category ? `${dot}${bucket.category}` : ''}`
           }
         ]}
         t={t}
@@ -545,9 +548,12 @@ function TreeLine({ active, palette, row, t }: { active: boolean; palette: Starm
     <ListRow
       active={active}
       cells={[
-        { color: t.color.muted, text: ` ${last ? '└─' : '├─'} ` },
+        {
+          color: t.color.muted,
+          text: ` ${last ? t.design.glyphs.railElbow : t.design.glyphs.railTee}${t.design.borders.rule} `
+        },
         { color: fadeInk(palette, node.style, 1), text: `${node.glyph} ${node.fullLabel || node.label}` },
-        { color: t.color.muted, text: `  ${node.meta}${node.body ? '  ›' : ''}` }
+        { color: t.color.muted, text: `  ${node.meta}${node.body ? `  ${t.design.glyphs.chevronClosed}` : ''}` }
       ]}
       t={t}
     />
@@ -556,7 +562,7 @@ function TreeLine({ active, palette, row, t }: { active: boolean; palette: Starm
 
 function Shell({ children, t }: { children: React.ReactNode; t: Theme }) {
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={1}>
+    <Box flexDirection="column" paddingX={t.design.spacing.overlayPadX} paddingY={t.design.spacing.overlayPadY}>
       <Text bold color={t.color.primary}>
         ✦ Journey
       </Text>

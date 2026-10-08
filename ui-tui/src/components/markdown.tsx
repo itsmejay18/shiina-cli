@@ -1,6 +1,7 @@
 import { Box, Link, stringWidth, Text } from '@shiina/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
+import { headerLead } from '../design.js'
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { normalizeExternalUrl } from '../lib/externalLink.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
@@ -375,7 +376,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   }
 
   const isHard = totalMin > availableWidth // tier 3 needs hard word breaks
-  const sep = columnWidths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+  const sep = columnWidths.map(w => t.design.borders.rule.repeat(Math.max(1, w))).join('  ')
 
   // When wrapping isn't needed, build single-line strings per row.
   // All cells render as plain text via stripInlineMarkup.
@@ -473,7 +474,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
       return (
         <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
           <Text bold color={t.color.accent} wrap="wrap-trim">
-            {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(' · ')}
+            {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(t.design.glyphs.dotSeparator)}
           </Text>
         </Box>
       )
@@ -489,7 +490,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
           <Fragment key={ri}>
             {ri > 0 ? (
               <Text color={t.color.muted} dimColor>
-                {'─'.repeat(sepWidth)}
+                {t.design.borders.rule.repeat(sepWidth)}
               </Text>
             ) : null}
             {headers.map((header, ci) => {
@@ -749,7 +750,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         start('paragraph')
         nodes.push(
           <Text color={t.color.muted} key={key} wrap="wrap-trim">
-            {'▸ '}
+            {headerLead(t.design.header, false, t.design.glyphs)}
 
             <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
               <Text color={t.color.accent} underline>
@@ -799,7 +800,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
+            {lang && !isDiff && <Text color={t.color.muted}>{`${t.design.borders.rule} ${lang}`}</Text>}
 
             {block.map((l, j) => {
               if (highlighted) {
@@ -825,6 +826,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
               return (
                 <Text
                   backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
+                  bold={add || del}
                   color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
                   dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
                   key={j}
@@ -947,7 +949,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         start('rule')
         nodes.push(
           <Text color={t.color.muted} key={key}>
-            {'─'.repeat(36)}
+            {t.design.borders.rule.repeat(36)}
           </Text>
         )
         i++
@@ -998,7 +1000,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
           nodes.push(
             <Text key={`${key}-def-${i}`} wrap="wrap-trim">
-              <Text color={t.color.muted}> · </Text>
+              <Text color={t.color.muted}>{t.design.glyphs.dotSeparator}</Text>
               <MdInline color={t.color.text} t={t} text={def} />
             </Text>
           )
@@ -1014,7 +1016,11 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         start('list')
 
         const task = bullet[2]!.match(TASK_RE)
-        const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
+        const marker = task
+          ? task[1]!.toLowerCase() === 'x'
+            ? t.design.glyphs.checkboxOn
+            : t.design.glyphs.checkboxOff
+          : t.design.glyphs.dot
 
         nodes.push(
           <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
@@ -1063,7 +1069,8 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
             {quoteLines.map((ql, qi) => (
               <Box key={qi} paddingLeft={Math.max(0, ql.depth - 1) * 2}>
                 <Text color={t.color.muted} wrap="wrap-trim">
-                  │ <MdInline t={t} text={ql.text} />
+                  <Text color={t.color.border}>{t.design.indent.stem || `${t.design.glyphs.railVertical} `}</Text>
+                  <MdInline t={t} text={ql.text} />
                 </Text>
               </Box>
             ))}
@@ -1099,7 +1106,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         start('paragraph')
         nodes.push(
           <Text color={t.color.muted} key={key} wrap="wrap-trim">
-            ▶ {summary}
+            {t.design.glyphs.disclosure} {summary}
           </Text>
         )
         i++

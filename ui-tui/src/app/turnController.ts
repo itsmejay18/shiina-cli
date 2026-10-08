@@ -10,12 +10,14 @@ import {
 import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { adaptStreamDelay } from '../lib/streamGovernor.js'
 import {
-  boundedLiveRenderText,
   buildToolTrailLine,
   buildVerboseToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
+  liveTailLabel,
+  liveTailWindow,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
@@ -135,9 +137,14 @@ class TurnController {
   private interimBoundaryIndex: null | number = null
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
+  private reasoningStartedAt: number = 0
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
+  /** Interaction floor the governor may not decay below (0 = none). */
+  private streamDelayClamp = 0
+  /** Wall time of the last stream commit (governor input). */
+  private lastStreamFireAt = 0
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -151,14 +158,19 @@ class TurnController {
   private noticeIdSeq = 0
 
   boostStreamingForTyping() {
-    this.streamDelay = STREAM_TYPING_BATCH_MS
+    // User interaction sets a floor the governor may not decay below: a keystroke
+    // must not queue behind a 60 ms-old stream commit.
+    this.streamDelayClamp = STREAM_TYPING_BATCH_MS
+    this.streamDelay = Math.max(this.streamDelay, STREAM_TYPING_BATCH_MS)
   }
 
   boostStreamingForScroll() {
+    this.streamDelayClamp = STREAM_SCROLL_BATCH_MS
     this.streamDelay = Math.max(this.streamDelay, STREAM_SCROLL_BATCH_MS)
   }
 
   relaxStreaming() {
+    this.streamDelayClamp = 0
     this.streamDelay = STREAM_IDLE_BATCH_MS
   }
 
@@ -167,8 +179,9 @@ class TurnController {
     this.activeReasoningText = ''
     this.reasoningSegmentIndex = null
     this.reasoningText = ''
+    this.reasoningStartedAt = 0
     this.toolTokenAcc = 0
-    patchTurnState({ reasoning: '', reasoningTokens: 0, toolTokens: 0 })
+    patchTurnState({ reasoning: '', reasoningDuration: 0, reasoningTokens: 0, toolTokens: 0 })
   }
 
   clearStatusTimer() {
@@ -271,15 +284,17 @@ class TurnController {
 
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
+    const duration = this.reasoningStartedAt > 0 ? (Date.now() - this.reasoningStartedAt) / 1000 : 0
+    this.reasoningStartedAt = 0
 
     // Seal any open reasoning segment so its isLiveReasoning flag drops the
     // moment the reasoning phase ends — the panel must stop tracking the
     // turn's global reasoningActive, not stay "live" for the rest of the turn.
     if (this.reasoningSegmentIndex !== null) {
-      this.syncReasoningSegment(false)
+      this.syncReasoningSegment(false, duration)
     }
 
-    patchTurnState({ reasoningActive: false, reasoningStreaming: false })
+    patchTurnState({ reasoningActive: false, reasoningStreaming: false, reasoningDuration: duration })
   }
 
   idle() {
@@ -294,6 +309,9 @@ class TurnController {
       streamPendingTools: [],
       streamSegments: [],
       streaming: '',
+      streamingDropped: 0,
+      streamingLabel: '',
+      streamingRaw: '',
       subagents: [],
       tools: [],
       turnTrail: []
@@ -372,18 +390,21 @@ class TurnController {
     })
   }
 
-  private syncReasoningSegment(live = true) {
+  private syncReasoningSegment(live = true, duration?: number) {
     const thinking = this.activeReasoningText.trim()
 
     if (!thinking) {
       return
     }
 
+    const dur = duration !== undefined ? duration : (this.reasoningStartedAt > 0 ? (Date.now() - this.reasoningStartedAt) / 1000 : undefined)
+
     const msg: Msg = {
       kind: 'trail',
       role: 'system',
       text: '',
       thinking,
+      thinkingDuration: dur,
       thinkingTokens: estimateTokensRough(thinking),
       toolTokens: this.toolTokenAcc || undefined,
       ...(live ? { isLiveReasoning: true } : {})
@@ -444,6 +465,9 @@ class TurnController {
   }
 
   pulseReasoningStreaming() {
+    if (!this.reasoningStartedAt) {
+      this.reasoningStartedAt = Date.now()
+    }
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
     patchTurnState({ reasoningActive: true, reasoningStreaming: true })
 
@@ -619,10 +643,13 @@ class TurnController {
       return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
     })
 
-    const hasReasoningSegment =
-      this.reasoningSegmentIndex !== null || segments.some(msg => Boolean(msg.thinking?.trim()))
+    const segmentThinking = segments
+      .map(msg => msg.thinking?.trim())
+      .filter(Boolean)
+      .join('\n\n')
 
-    const finalThinking = hasReasoningSegment ? '' : savedReasoning.trim()
+    // If segments already contain reasoning, don't duplicate it into finalDetails
+    const finalThinking = segmentThinking ? '' : savedReasoning.trim()
 
     const finalDetails: Msg = {
       kind: 'trail',
@@ -826,8 +853,10 @@ class TurnController {
       return
     }
 
-    this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, '', duration, resultText)])
+    const toolLine = this.completeTool(toolId, fallbackName, '', duration, resultText)
+    const combinedLine = diffText ? `${toolLine}\n\`\`\`diff\n${diffText.replace(/^\s*┊[^\n]*\n?/, '').trim()}\n\`\`\`` : toolLine
+    this.pendingSegmentTools = [...this.pendingSegmentTools, combinedLine]
+    this.flushPendingToolsIntoLastSegment()
     this.publishToolState()
   }
 
@@ -946,8 +975,38 @@ class TurnController {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-      patchTurnState({ streaming: boundedLiveRenderText(visible) })
+      const window = liveTailWindow(visible)
+
+      patchTurnState({
+        streaming: liveTailLabel(window) ? `${liveTailLabel(window)}\n${window.text}` : window.text,
+        // The scanner needs the stream, not the window (see turnStore).
+        streamingDropped: window.dropped,
+        streamingLabel: liveTailLabel(window),
+        streamingRaw: visible
+      })
+      this.adaptStreamDelay()
     }, this.streamDelay)
+  }
+
+  /**
+   * Advance the streaming governor with the measured cycle time.
+   *
+   * `cycleMs` spans the previous delay AND the commit work it triggered, so a
+   * saturated loop (work > delay) shows up as a cycle longer than the delay and
+   * the governor backs off — the frame queue never builds up. See
+   * `lib/streamGovernor.ts`.
+   */
+  private adaptStreamDelay() {
+    const now = Date.now()
+    const cycleMs = this.lastStreamFireAt ? now - this.lastStreamFireAt : this.streamDelay
+
+    this.lastStreamFireAt = now
+    this.streamDelay = adaptStreamDelay(this.streamDelay, cycleMs, this.streamDelayFloor())
+  }
+
+  /** The floor for the current interaction mode (typing/scroll clamp, else base). */
+  private streamDelayFloor() {
+    return this.streamDelayClamp || STREAM_IDLE_BATCH_MS
   }
 
   hydrateStreamingText(text: string) {
@@ -955,7 +1014,14 @@ class TurnController {
     this.bufRef = text
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-    patchTurnState({ streaming: boundedLiveRenderText(visible) })
+    const window = liveTailWindow(visible)
+
+    patchTurnState({
+      streaming: window.text,
+      streamingDropped: window.dropped,
+      streamingLabel: liveTailLabel(window),
+      streamingRaw: visible
+    })
   }
 
   startMessage() {

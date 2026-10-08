@@ -27376,6 +27376,18 @@
             "default": null,
             "title": "Cost Status"
           },
+          "limits_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limits Label"
+          },
           "credits_lines": {
             "anyOf": [
               {
@@ -28387,6 +28399,23 @@
             "default": "",
             "title": "Help Header",
             "type": "string"
+          },
+          "tui": {
+            "additionalProperties": true,
+            "title": "Tui",
+            "type": "object"
+          },
+          "design": {
+            "additionalProperties": true,
+            "title": "Design",
+            "type": "object"
+          },
+          "designs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Designs",
+            "type": "array"
           }
         },
         "title": "SkinPayload",
@@ -31577,6 +31606,18 @@
             ],
             "default": null,
             "title": "Cost Status"
+          },
+          "limits_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limits Label"
           }
         },
         "title": "Usage",

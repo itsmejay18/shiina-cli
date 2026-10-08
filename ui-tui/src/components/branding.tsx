@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { flankFill } from '../design.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -70,12 +71,13 @@ const centerIn = (s: string, w: number) => {
   return `${' '.repeat(left)}${f}${' '.repeat(slack - left)}`
 }
 
-const ruleIn = (label: string, w: number) => {
+const ruleIn = (label: string, w: number, t: Theme) => {
   const f = clip(label, Math.max(1, w - 4))
   const slack = Math.max(0, w - f.length - 2)
   const left = slack >> 1
+  const fill = (n: number) => flankFill(t.design.flank, t.design.borders.rule, n)
 
-  return `${'─'.repeat(left)} ${f} ${'─'.repeat(slack - left)}`
+  return `${fill(left)} ${f} ${fill(slack - left)}`
 }
 
 function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
@@ -84,8 +86,8 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
 
   return (
     <Box flexDirection="column" height={2} marginBottom={1} width={w}>
-      <Text color={t.color.primary}>{ruleIn('shiinaaa', w)}</Text>
-      <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
+      <Text color={t.color.primary}>{ruleIn(t.brand.name, w, t)}</Text>
+      <Text color={t.color.primary}>{t.design.borders.rule.repeat(w)}</Text>
     </Box>
   )
 }
@@ -134,7 +136,7 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Text bold color={t.color.primary} wrap="truncate-end">
-        {t.brand.icon} shiinaaa
+        {t.brand.icon} {t.brand.name}
       </Text>
     </Box>
   )
@@ -412,10 +414,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
       <Text color={t.color.text}>
         {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
-        {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
+        {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{t.design.glyphs.dotSeparator}
         {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
-        {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
-        {' · '}
+        {mcpConnected ? `${t.design.glyphs.dotSeparator}${mcpConnected} MCP` : ''}
+        {t.design.glyphs.dotSeparator}
         <Text color={t.color.muted}>/help for commands</Text>
       </Text>
 
@@ -445,7 +447,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   )
 
   return (
-    <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
+    <Box borderColor={t.color.border} borderStyle={t.design.borders.panel} marginBottom={1} paddingX={t.design.spacing.panelPadX} paddingY={t.design.spacing.panelPadY}>
       <WidgetGrid
         cols={wide ? leftW + 2 + w : w}
         columns={wide ? [leftW, { fr: 1 }] : 1}
@@ -468,7 +470,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
 export function Panel({ sections, t, title }: PanelProps) {
   return (
-    <Box borderColor={t.color.border} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
+    <Box borderColor={t.color.border} borderStyle={t.design.borders.panel} flexDirection="column" paddingX={t.design.spacing.panelPadX} paddingY={t.design.spacing.panelPadY}>
       <Box justifyContent="center" marginBottom={1}>
         <Text bold color={t.color.primary}>
           {title}

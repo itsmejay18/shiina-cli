@@ -3,6 +3,7 @@ import type { Usage } from '@shiina/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
+import type { LayoutId } from '../domain/layout.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   BillingCardInfo,
@@ -17,6 +18,7 @@ import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
+import type { DesignSpec } from '../domain/designSpec.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -334,6 +336,8 @@ export interface UiState {
   // persistent `◉ focus` status-bar badge; never affects request payloads.
   focusView: boolean
   info: null | SessionInfo
+  // `display.layout` — the structural layout (minimal | workbench | studio).
+  layout: LayoutId
   liveSessionCount: number
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode
@@ -358,6 +362,14 @@ export interface UiState {
   statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
+  /** The theme as resolved from the skin, BEFORE the active design is applied.
+   *  Kept so switching designs recomputes from a clean base instead of
+   *  compounding one design's palette onto another's. */
+  baseTheme: Theme
+  /** The resolved design from the design folder, or null for the built-in look. */
+  design: DesignSpec | null
+  /** Every available design name (gateway catalog) — what `/design` offers. */
+  designs: string[]
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).
   timestamps: boolean
@@ -613,6 +625,9 @@ export interface AppLayoutStatusProps {
   stickyPrompt: string
   turnStartedAt: null | number
   voiceLabel: string
+  /** Drives the voice readout's marker glyph + colour; the glyph itself is not
+   *  part of `voiceLabel` (statusSegments renders it from the design). */
+  voiceTone: 'idle' | 'rec' | 'stt'
 }
 
 export interface AppLayoutTranscriptProps {

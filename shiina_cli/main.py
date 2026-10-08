@@ -272,6 +272,62 @@ def _config_default_interface_early() -> str:
     return value
 
 
+# Raw config.yaml for the pre-import safety bridges (redaction / IPv4). Cached: several early
+# callers would otherwise re-parse the same file.
+_EARLY_EFFECTIVE_CACHE: "list | None" = None
+
+
+def _has_env_template(node) -> bool:
+    """True when *node* contains a ``${VAR}`` reference — only config_effective can expand those."""
+    if isinstance(node, str):
+        return "${" in node
+    if isinstance(node, dict):
+        return any(_has_env_template(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_has_env_template(item) for item in node)
+    return False
+
+
+def _config_early_effective() -> dict:
+    """Effective user config for the early bridges, WITHOUT importing shiina_cli.config.
+
+    ``config_effective.load_user_config_effective`` is the canonical loader (managed overlay +
+    ``${VAR}`` expansion), but importing it drags ``shiina_cli.config`` — and through it urllib,
+    the provider registry and the plugin tables — into every command's startup (~0.45 s) for two
+    booleans. Read the raw YAML directly and defer to the canonical loader only when its extra
+    semantics actually apply: a ``${...}`` template under ``security``/``network``, or a real
+    managed scope that may pin those keys.
+    """
+    global _EARLY_EFFECTIVE_CACHE
+    if _EARLY_EFFECTIVE_CACHE is not None:
+        return _EARLY_EFFECTIVE_CACHE[0]
+    raw: dict = {}
+    try:
+        cfg_path = get_shiina_home() / "config.yaml"
+        if cfg_path.exists():
+            from shiina_cli import managed_scope
+
+            if managed_scope.load_managed_config():
+                from shiina_cli.config_effective import load_user_config_effective
+
+                raw = load_user_config_effective(cfg_path)
+            else:
+                import yaml as _yaml_early
+
+                with open(cfg_path, encoding="utf-8") as _f:
+                    loaded = _yaml_early.load(
+                        _f, Loader=getattr(_yaml_early, "CSafeLoader", None) or _yaml_early.SafeLoader)
+                raw = loaded if isinstance(loaded, dict) else {}
+                if _has_env_template(raw.get("security")) or _has_env_template(raw.get("network")):
+                    from shiina_cli.config_effective import load_user_config_effective
+
+                    raw = load_user_config_effective(cfg_path)
+    except Exception:
+        raw = {}  # best-effort — the bridges fall back to their defaults
+    _EARLY_EFFECTIVE_CACHE = [raw]
+    return raw
+
+
 def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
     """Earliest TUI decision, usable before argparse/config imports.
 
@@ -335,7 +391,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 from shiina_cli.subcommands.cron import build_cron_parser
@@ -365,6 +421,7 @@ from shiina_cli.subcommands.import_cmd import build_import_cmd_parser
 from shiina_cli.subcommands.import_agent import build_import_agent_parser
 from shiina_cli.subcommands.config import build_config_parser
 from shiina_cli.subcommands.skin import build_skin_parser
+from shiina_cli.subcommands.design import build_design_parser
 from shiina_cli.subcommands.console import build_console_parser
 from shiina_cli.subcommands.update import build_update_parser
 from shiina_cli.subcommands.uninstall import build_uninstall_parser
@@ -646,13 +703,15 @@ if sys.platform == "win32":
 
 # Load .env from ~/.shiina/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from shiina_cli.config import get_shiina_home
+from shiina_constants import get_shiina_home
 from shiina_cli.env_loader import load_shiina_dotenv
 
 # ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
 # helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
 # owns that argv check for every dotenv load in the process. See #73381.
-load_shiina_dotenv(project_env=PROJECT_ROOT / ".env")
+# The terminal.* → env bridge is deferred to main(): it imports shiina_cli.config (~0.4 s) and
+# nothing between here and main() reads TERMINAL_*. See env_loader._reapply_terminal_config_bridge.
+load_shiina_dotenv(project_env=PROJECT_ROOT / ".env", reapply_terminal_bridge=False)
 
 # Bridge security.redact_secrets → SHIINA_REDACT_SECRETS BEFORE shiina_logging
 # imports agent.redact, which snapshots the flag exactly once at import. A
@@ -660,25 +719,21 @@ load_shiina_dotenv(project_env=PROJECT_ROOT / ".env")
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
 try:
-    # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
-    # serves shiina_logging, shiina_time and later raw reads: 3-4 config.yaml parses become one.
-    # Managed overlay included: administrator-pinned redact_secrets / force_ipv4 win here too.
-    from shiina_cli.config_effective import load_user_config_effective as _load_effective_early
-
-    _cfg_path = get_shiina_home() / "config.yaml"
-    if _cfg_path.exists():
-        _early_cfg_raw = _load_effective_early(_cfg_path)
-        if "SHIINA_REDACT_SECRETS" not in os.environ:
-            _early_sec_cfg = _early_cfg_raw.get("security", {})
-            if isinstance(_early_sec_cfg, dict):
-                _early_redact = _early_sec_cfg.get("redact_secrets")
-                if _early_redact is not None:
-                    os.environ["SHIINA_REDACT_SECRETS"] = str(_early_redact).lower()
-        _early_net_cfg = _early_cfg_raw.get("network", {})
-        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
-            _FORCE_IPV4_EARLY = True
-        del _early_cfg_raw
-    del _cfg_path
+    # Two booleans is all this block needs, so read config.yaml through the minimal early loader
+    # instead of importing shiina_cli.config_effective → shiina_cli.config (~0.45 s of urllib +
+    # provider/plugin tables per command). The managed overlay and ``${VAR}`` semantics still
+    # apply — _config_early_effective defers to the canonical loader when either is in play.
+    _early_cfg_raw = _config_early_effective()
+    if "SHIINA_REDACT_SECRETS" not in os.environ:
+        _early_sec_cfg = _early_cfg_raw.get("security", {})
+        if isinstance(_early_sec_cfg, dict):
+            _early_redact = _early_sec_cfg.get("redact_secrets")
+            if _early_redact is not None:
+                os.environ["SHIINA_REDACT_SECRETS"] = str(_early_redact).lower()
+    _early_net_cfg = _early_cfg_raw.get("network", {})
+    if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
+        _FORCE_IPV4_EARLY = True
+    del _early_cfg_raw
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
@@ -713,32 +768,51 @@ from datetime import datetime
 
 from shiina_cli import __version__, __release_date__
 
-from shiina_cli.model_setup_flows import (
-    _model_flow_openrouter,
-    _model_flow_nous,
-    _model_flow_openai_codex,
-    _model_flow_xai_oauth,
-    _model_flow_qwen_oauth,
-    _model_flow_minimax_oauth,
-    _model_flow_custom,
-    _model_flow_azure_foundry,
-    _model_flow_named_custom,
-    _model_flow_copilot,
-    _model_flow_copilot_acp,
-    _model_flow_antigravity,
-    _model_flow_kiro,
-    _model_flow_freebuff,
-    _model_flow_opencode,
-    _model_flow_qoder,
-    _model_flow_kimi,
-    _model_flow_stepfun,
-    _model_flow_bedrock,
-    _model_flow_vertex,
-    _model_flow_api_key_provider,
-    _model_flow_anthropic,
-    _model_flow_moa,
-    _model_flow_ai_gateway,
+# _model_flow_* picker flows: imported on first use, not at module import
+# (the whole model_setup_flows family costs ~40-95 ms of every `shiina`
+# start; only the interactive model pickers run them).
+_MODEL_FLOW_NAMES: tuple[str, ...] = (
+    "_model_flow_openrouter",
+    "_model_flow_nous",
+    "_model_flow_openai_codex",
+    "_model_flow_xai_oauth",
+    "_model_flow_qwen_oauth",
+    "_model_flow_minimax_oauth",
+    "_model_flow_custom",
+    "_model_flow_azure_foundry",
+    "_model_flow_named_custom",
+    "_model_flow_copilot",
+    "_model_flow_copilot_acp",
+    "_model_flow_antigravity",
+    "_model_flow_kiro",
+    "_model_flow_freebuff",
+    "_model_flow_opencode",
+    "_model_flow_qoder",
+    "_model_flow_kimi",
+    "_model_flow_stepfun",
+    "_model_flow_bedrock",
+    "_model_flow_vertex",
+    "_model_flow_api_key_provider",
+    "_model_flow_anthropic",
+    "_model_flow_moa",
+    "_model_flow_ai_gateway",
 )
+
+
+def _ensure_model_flows():
+    """Import the picker flows once and publish them as module globals.
+
+    ``setdefault`` (never ``globals()[name] = ...``) so a test's monkeypatch
+    on ``shiina_cli.main._model_flow_*`` is not clobbered; the lambdas in
+    ``_PROVIDER_MODEL_FLOWS`` resolve the names at call time.
+    """
+    import importlib
+
+    module = importlib.import_module("shiina_cli.model_setup_flows")
+    for name in _MODEL_FLOW_NAMES:
+        globals().setdefault(name, getattr(module, name))
+
+
 logger = logging.getLogger(__name__)
 from shiina_cli.main_agent_cmds import (
     cmd_acp,
@@ -1898,6 +1972,8 @@ cmd_doctor = _forward_command("cmd_doctor", "shiina_cli.doctor", "run_doctor", d
 cmd_dump = _forward_command("cmd_dump", "shiina_cli.dump", "run_dump", doc='Dump setup summary for support/debugging.')
 cmd_debug = _forward_command("cmd_debug", "shiina_cli.debug", "run_debug", doc='Debug tools (share report, etc.).')
 cmd_skin = _forward_command("cmd_skin", "shiina_cli.skin_cmd", "skin_command", doc='Skin management (list / use / set).')
+cmd_design = _forward_command("cmd_design", "shiina_cli.design_cmd", "design_command",
+                              doc='TUI design management (list / use / show / path / init / keys).')
 cmd_import = _forward_command("cmd_import", "shiina_cli.backup", "run_import", doc='Restore a Shiina backup from a zip file.')
 cmd_dashboard_register = _forward_command("cmd_dashboard_register", "shiina_cli.dashboard_register", "cmd_dashboard_register", doc='Register a self-hosted dashboard OAuth client with Shiina Portal.')
 cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "shiina_cli.gateway_enroll", "cmd_gateway_enroll", doc='Enroll a self-hosted gateway with a relay connector.')
@@ -2056,6 +2132,7 @@ def select_provider_and_model(args=None):
     provider picker, credential prompting, model selection, and config
     persistence.
     """
+    _ensure_model_flows()
     from shiina_cli.config import load_config
 
     config = load_config()
@@ -2176,7 +2253,10 @@ _FROZEN_ATTR_SOURCES: dict[str, str] = {
 
 
 def __getattr__(name):
-    """Resolve the frozen updater surface on first read (see _FROZEN_UPDATER_SURFACE)."""
+    """Resolve the frozen updater surface / picker flows on first read."""
+    if name in _MODEL_FLOW_NAMES:
+        _ensure_model_flows()
+        return globals()[name]
     module = _FROZEN_ATTR_SOURCES.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -2724,7 +2804,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "config", "console", "cron", "curator", "dashboard", "design", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
@@ -3081,7 +3161,7 @@ def _try_fast_serve_launch() -> bool:
 def _try_fast_chat_launch() -> bool:
     """Fast path for unambiguous interactive chat launches (all hosts).
 
-    Building all ~40 subcommand parsers costs ~140ms the chat path never
+    Building all 74 subcommand parsers costs ~230-300 ms the chat path never
     uses. Bails out (False) whenever the invocation is not certainly a chat
     launch — subcommand positional, ``--help``, unknown flags. Mirrors
     ``_try_termux_fast_cli_launch`` minus the Termux deferred startup; kept
@@ -3285,117 +3365,244 @@ def _cmd_sessions_lazy(args, **kwargs):
     return cmd_sessions(args, **kwargs)
 
 
-def _build_cli_parser():
-    """Build the full ``shiina`` argparse tree -> ``(parser, subparsers)``.
-
-    Registration ORDER is the ``shiina --help`` order; keep it stable. Groups
-    live in ``shiina_cli/subcommands/<group>.py`` with handlers injected so
-    those modules never import main.
-    """
-    from shiina_cli._parser import build_top_level_parser
-
-    parser, subparsers, chat_parser = build_top_level_parser()
-    chat_parser.set_defaults(func=cmd_chat)
-
-    build_model_parser(subparsers, cmd_model=cmd_model)
-    build_moa_parser(subparsers)
-    build_fallback_parser(subparsers)
-    build_worktree_parser(subparsers)
-    build_browser_parser(subparsers)
-    build_secrets_parser(subparsers)
-    # OUTBOUND egress firewall; ``shiina proxy`` (gateway group) is the INBOUND one.
-    build_egress_parser(subparsers)
-    build_migrate_parser(subparsers)
-    build_gateway_parser(
-        subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
-    )
-
-    # LSP is optional — a registration failure must not break the CLI.
+def _build_lsp(subparsers, _parser) -> None:
+    """LSP is optional — a registration failure must not break the CLI."""
     try:
         from agent.lsp.cli import register_subparser as _lsp_register
         _lsp_register(subparsers)
     except Exception as _lsp_err:  # noqa: BLE001
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
-    build_setup_parser(subparsers, cmd_setup=cmd_setup)
-    build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
-    build_whatsapp_cloud_parser(subparsers, cmd_whatsapp_cloud=cmd_whatsapp_cloud)
-    build_slack_parser(subparsers, cmd_slack=cmd_slack)
 
-    from shiina_cli.send_cmd import register_send_subparser
-    register_send_subparser(subparsers)
-
-    build_login_parser(subparsers, cmd_login=cmd_login)
-    build_logout_parser(subparsers, cmd_logout=cmd_logout)
-    build_auth_parser(subparsers, cmd_auth=cmd_auth)
+def _add_scan_parser(subparsers) -> None:
     scan_parser = subparsers.add_parser("scan", help="Scan external CLI tools and sync detected accounts")
     scan_parser.set_defaults(func=cmd_scan)
-    build_status_parser(subparsers, cmd_status=cmd_status)
-    build_pause_parser(subparsers)
-    build_cron_parser(subparsers, cmd_cron=cmd_cron)
-    build_sync_parser(subparsers, cmd_sync=cmd_sync)
-    build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
+
+def _build_send_parser(subparsers):
+    from shiina_cli.send_cmd import register_send_subparser
+
+    return register_send_subparser(subparsers)
+
+
+def _build_peer_parser(subparsers):
     from shiina_cli.subcommands.peer import build_peer_parser
-    build_peer_parser(subparsers)
 
-    from shiina_cli.portal_cli import add_parser as _add_portal_parser
-    _add_portal_parser(subparsers)
+    return build_peer_parser(subparsers)
 
-    from shiina_cli.kanban import build_parser as _build_kanban_parser
-    _build_kanban_parser(subparsers).set_defaults(func=cmd_kanban)
 
-    from shiina_cli.projects_cmd import build_parser as _build_project_parser
-    _build_project_parser(subparsers).set_defaults(func=cmd_project)
+def _add_portal_parser(subparsers):
+    from shiina_cli.portal_cli import add_parser
 
-    build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
-    build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
-    build_verify_parser(subparsers, cmd_verify=cmd_verify)
-    build_security_parser(subparsers, cmd_security=cmd_security)
-    build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
-    build_dump_parser(subparsers, cmd_dump=cmd_dump)
-    build_debug_parser(subparsers, cmd_debug=cmd_debug)
-    build_backup_parser(subparsers, cmd_backup=cmd_backup)
-    build_checkpoints_parser(subparsers)
-    build_import_cmd_parser(subparsers, cmd_import=cmd_import)
-    build_import_agent_parser(subparsers, cmd_import_agent=cmd_import_agent)
-    build_config_parser(subparsers, cmd_config=cmd_config)
-    build_skin_parser(subparsers, cmd_skin=cmd_skin)
-    build_console_parser(subparsers, cmd_console=cmd_console)
-    build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
-    build_skills_parser(subparsers, cmd_skills=cmd_skills)
-    build_bundles_parser(subparsers)
-    build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
+    return add_parser(subparsers)
 
-    _register_plugin_cli_commands(subparsers)
 
-    build_curator_parser(subparsers)
-    build_pets_parser(subparsers)
-    build_journey_parser(subparsers)
-    build_memory_parser(subparsers, cmd_memory=cmd_memory)
-    build_tools_parser(subparsers, cmd_tools=cmd_tools)
-    build_computer_use_parser(subparsers)
-    build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
-    build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
-    build_insights_parser(subparsers, cmd_insights=cmd_insights)
-    build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
-    build_claw_parser(subparsers, cmd_claw=cmd_claw)
-    build_vault_parser(subparsers)
-    build_update_parser(subparsers, cmd_update=cmd_update)
-    build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
-    build_acp_parser(subparsers, cmd_acp=cmd_acp)
-    build_profile_parser(subparsers, cmd_profile=cmd_profile)
-    build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
-    build_dashboard_parser(
-        subparsers,
-        cmd_dashboard=cmd_dashboard,
-        cmd_dashboard_register=cmd_dashboard_register,
-    )
+def _build_kanban_parser(subparsers):
+    from shiina_cli.kanban import build_parser
+
+    return build_parser(subparsers).set_defaults(func=cmd_kanban)
+
+
+def _build_project_parser(subparsers):
+    from shiina_cli.projects_cmd import build_parser
+
+    return build_parser(subparsers).set_defaults(func=cmd_project)
+
+
+def _build_cli_parser(command: str | None = None):
+    """Build the ``shiina`` argparse tree -> ``(parser, subparsers)``.
+
+    With no ``command`` this is the FULL tree (every caller and test today);
+    with a name it builds only that entry's subparser (top level + chat + the
+    target). Registration ORDER is the ``shiina --help`` order; keep it
+    stable — the table below IS that order. Groups live in
+    ``shiina_cli/subcommands/<group>.py`` with handlers injected so those
+    modules never import main.
+    """
+    from shiina_cli._parser import build_top_level_parser
+
+    parser, subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+
+    if command is None:
+        for _names, builder in _CLI_SUBPARSER_BUILDERS:
+            builder(subparsers, parser)
+    else:
+        _SUBPARSER_BUILDER_BY_NAME[command](subparsers, parser)
+    return parser, subparsers
+
+
+# (names, builder) — names covers canonical + aliases; ORDER is the ``shiina --help`` order.
+# ``help`` is NOT a builder (table drift defers to the full build); ``scan`` is an inline
+# add_parser entry. Function-local imports stay inside their builder so a non-target command
+# never pays them.
+_CLI_SUBPARSER_BUILDERS: tuple[tuple[tuple[str, ...], Callable], ...] = (
+    (("model",), lambda s, p: build_model_parser(s, cmd_model=cmd_model)),
+    (("moa",), lambda s, p: build_moa_parser(s)),
+    (("fallback",), lambda s, p: build_fallback_parser(s)),
+    (("worktree",), lambda s, p: build_worktree_parser(s)),
+    (("browser",), lambda s, p: build_browser_parser(s)),
+    (("secrets",), lambda s, p: build_secrets_parser(s)),
+    # OUTBOUND egress firewall; ``shiina proxy`` (gateway group) is the INBOUND one.
+    (("egress",), lambda s, p: build_egress_parser(s)),
+    (("migrate",), lambda s, p: build_migrate_parser(s)),
+    (
+        ("gateway", "proxy"),
+        lambda s, p: build_gateway_parser(
+            s, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
+        ),
+    ),
+    (("lsp",), _build_lsp),
+    (("setup",), lambda s, p: build_setup_parser(s, cmd_setup=cmd_setup)),
+    (("whatsapp",), lambda s, p: build_whatsapp_parser(s, cmd_whatsapp=cmd_whatsapp)),
+    (("whatsapp-cloud",), lambda s, p: build_whatsapp_cloud_parser(s, cmd_whatsapp_cloud=cmd_whatsapp_cloud)),
+    (("slack",), lambda s, p: build_slack_parser(s, cmd_slack=cmd_slack)),
+    (("send",), lambda s, p: _build_send_parser(s)),
+    (("login",), lambda s, p: build_login_parser(s, cmd_login=cmd_login)),
+    (("logout",), lambda s, p: build_logout_parser(s, cmd_logout=cmd_logout)),
+    (("auth",), lambda s, p: build_auth_parser(s, cmd_auth=cmd_auth)),
+    (("scan",), lambda s, p: _add_scan_parser(s)),
+    (("status",), lambda s, p: build_status_parser(s, cmd_status=cmd_status)),
+    (("pause", "resume"), lambda s, p: build_pause_parser(s)),
+    (("cron",), lambda s, p: build_cron_parser(s, cmd_cron=cmd_cron)),
+    (("sync",), lambda s, p: build_sync_parser(s, cmd_sync=cmd_sync)),
+    (("webhook",), lambda s, p: build_webhook_parser(s, cmd_webhook=cmd_webhook)),
+    (("peer",), lambda s, p: _build_peer_parser(s)),
+    (("portal",), lambda s, p: _add_portal_parser(s)),
+    (("kanban",), lambda s, p: _build_kanban_parser(s)),
+    (("project",), lambda s, p: _build_project_parser(s)),
+    (("hooks",), lambda s, p: build_hooks_parser(s, cmd_hooks=cmd_hooks)),
+    (("doctor",), lambda s, p: build_doctor_parser(s, cmd_doctor=cmd_doctor)),
+    (("verify",), lambda s, p: build_verify_parser(s, cmd_verify=cmd_verify)),
+    (("security",), lambda s, p: build_security_parser(s, cmd_security=cmd_security)),
+    (("approvals",), lambda s, p: build_approvals_parser(s, cmd_approvals=cmd_approvals)),
+    (("dump",), lambda s, p: build_dump_parser(s, cmd_dump=cmd_dump)),
+    (("debug",), lambda s, p: build_debug_parser(s, cmd_debug=cmd_debug)),
+    (("backup",), lambda s, p: build_backup_parser(s, cmd_backup=cmd_backup)),
+    (("checkpoints",), lambda s, p: build_checkpoints_parser(s)),
+    (("import",), lambda s, p: build_import_cmd_parser(s, cmd_import=cmd_import)),
+    (("import-agent",), lambda s, p: build_import_agent_parser(s, cmd_import_agent=cmd_import_agent)),
+    (("config",), lambda s, p: build_config_parser(s, cmd_config=cmd_config)),
+    (("skin",), lambda s, p: build_skin_parser(s, cmd_skin=cmd_skin)),
+    (("design",), lambda s, p: build_design_parser(s, cmd_design=cmd_design)),
+    (("console",), lambda s, p: build_console_parser(s, cmd_console=cmd_console)),
+    (("pairing",), lambda s, p: build_pairing_parser(s, cmd_pairing=cmd_pairing)),
+    (("skills",), lambda s, p: build_skills_parser(s, cmd_skills=cmd_skills)),
+    (("bundles",), lambda s, p: build_bundles_parser(s)),
+    (("plugins",), lambda s, p: build_plugins_parser(s, cmd_plugins=cmd_plugins)),
+    ((), lambda s, p: _register_plugin_cli_commands(s)),  # full-build-only, exact position
+    (("curator",), lambda s, p: build_curator_parser(s)),
+    (("pets",), lambda s, p: build_pets_parser(s)),
+    (("journey", "learning", "memory-graph"), lambda s, p: build_journey_parser(s)),
+    (("memory",), lambda s, p: build_memory_parser(s, cmd_memory=cmd_memory)),
+    (("tools",), lambda s, p: build_tools_parser(s, cmd_tools=cmd_tools)),
+    (("computer-use",), lambda s, p: build_computer_use_parser(s)),
+    (("mcp",), lambda s, p: build_mcp_parser(s, cmd_mcp=cmd_mcp)),
+    (("sessions",), lambda s, p: build_sessions_parser(s, cmd_sessions=_cmd_sessions_lazy)),
+    (("insights",), lambda s, p: build_insights_parser(s, cmd_insights=cmd_insights)),
+    (("monitoring",), lambda s, p: build_monitoring_parser(s, cmd_monitoring=cmd_monitoring)),
+    (("claw",), lambda s, p: build_claw_parser(s, cmd_claw=cmd_claw)),
+    (("vault",), lambda s, p: build_vault_parser(s)),
+    (("update",), lambda s, p: build_update_parser(s, cmd_update=cmd_update)),
+    (("uninstall",), lambda s, p: build_uninstall_parser(s, cmd_uninstall=cmd_uninstall)),
+    (("acp",), lambda s, p: build_acp_parser(s, cmd_acp=cmd_acp)),
+    (("profile",), lambda s, p: build_profile_parser(s, cmd_profile=cmd_profile)),
+    (("completion",), lambda s, p: build_completion_parser(s, cmd_completion=cmd_completion, parser=p)),
+    (
+        ("dashboard", "serve"),
+        lambda s, p: build_dashboard_parser(
+            s,
+            cmd_dashboard=cmd_dashboard,
+            cmd_dashboard_register=cmd_dashboard_register,
+        ),
+    ),
     # "desktop" is canonical (Shiina-Setup.exe tells users to run it, so it
     # must be the name --help shows); "gui" is a deprecated alias.
-    build_gui_parser(subparsers, cmd_gui=cmd_gui)
-    build_logs_parser(subparsers, cmd_logs=cmd_logs)
-    build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+    (("desktop", "gui"), lambda s, p: build_gui_parser(s, cmd_gui=cmd_gui)),
+    (("logs",), lambda s, p: build_logs_parser(s, cmd_logs=cmd_logs)),
+    (("prompt-size",), lambda s, p: build_prompt_size_parser(s, cmd_prompt_size=cmd_prompt_size)),
+    (("chat",), lambda s, p: None),  # chat's parser is created by build_top_level_parser
+)
+
+# name -> builder; the parity contract (table keys == the built tree's choices) is
+# tests/shiina_cli/test_cli_parser_dispatch.py.
+_SUBPARSER_BUILDER_BY_NAME = {
+    name: builder for names, builder in _CLI_SUBPARSER_BUILDERS for name in names
+}
+
+
+_SESSION_NAME_FLAGS = ("-c", "--continue", "-r", "--resume")
+# generate_bash/zsh/fish introspect the WHOLE tree, so `completion` never builds alone.
+_FULL_PARSER_COMMANDS = frozenset({"completion"})
+
+
+def _single_build_target(argv: list[str]) -> str | None:
+    """The one top-level command to build in isolation, or None to build the full tree.
+
+    Every None case here is today's full-build outcome kept verbatim: the single build may
+    only forgo a speedup, never change a parse.
+    """
+    if any(tok in _SESSION_NAME_FLAGS for tok in argv):
+        # `_coalesce_session_name_args` reshapes argv around these and
+        # `_rewrite_named_session_flags` early-returns on them, so the post-build rewrite
+        # guard cannot see this class and the resolver's candidate is not the token argparse
+        # routes (`["-c","x","kanban","acp"]` → full `acp`, single-built `kanban` → exit 2).
+        return None
+    from shiina_cli._parser import top_level_flag_sets
+
+    required, optional, top_opts = top_level_flag_sets()
+    value_flags = required | optional
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok in ("-h", "--help"):
+            return None  # top-level help enumerates all 74 → full build
+        if not tok.startswith("-"):
+            break
+        # A pre-positional flag the TOP-LEVEL parser does not define is either a named-session
+        # convenience (`shiina --tui --shiina`) or, when it is really a subcommand's flag
+        # (`--blank`, `--force`, `--json`, …, seen before the positional), something the full
+        # build's `_rewrite_named_session_flags` would NOT rewrite and argparse would reject.
+        # Either way only the full build produces today's exact outcome → defer.
+        if tok.split("=", 1)[0] not in top_opts:
+            return None
+        i += 2 if ("=" not in tok and tok in value_flags and i + 1 < len(argv)) else 1
+    else:
+        return None  # no positional → chat / top-level paths → full build
+    candidate = argv[i] if i < len(argv) else None
+    if candidate is None or candidate in _FULL_PARSER_COMMANDS:
+        return None
+    # `scan` lands here (and so does any plugin command or unknown token): absent from
+    # `_BUILTIN_SUBCOMMANDS`, `_plugin_cli_discovery_needed()` is True for it and the full
+    # build runs `_register_plugin_cli_commands` → `discover_plugins()`. Keep that decision.
+    if candidate not in _BUILTIN_SUBCOMMANDS:
+        return None
+    if candidate not in _SUBPARSER_BUILDER_BY_NAME:
+        return None  # table drift → fail safe
+    if candidate == "chat":
+        # chat's subparser defines `--resume`, so a single-built chat tree rewrites a
+        # post-positional `--<flag>` into `--resume <flag>` and RUNS, where the full build
+        # exits 2. Its valid launches never reach this build anyway (`_try_fast_chat_launch`
+        # intercepts them), so defer it.
+        return None
+    return candidate
+
+
+def _build_tree_for_argv(argv: list[str]):
+    """Build the smallest tree that reproduces the FULL build's parse for ``argv``.
+
+    ``_rewrite_named_session_flags`` derives ``known_opts`` from the built tree, so a single build
+    can rewrite a post-positional token the full build leaves alone (chat's ``--resume``, or an
+    abbreviation like ``desktop --force`` → ``--force-build``). The resolver never admits an unknown
+    PRE-positional flag, so any rewrite here is post-positional → the full build is the authority.
+    """
+    target = _single_build_target(argv)
+    parser, subparsers = _build_cli_parser(target)
+    if target is not None and _rewrite_named_session_flags(argv, parser, subparsers)[1]:
+        parser, subparsers = _build_cli_parser()
     return parser, subparsers
 
 
@@ -3520,6 +3727,15 @@ def main():
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()
 
+    # The module-level dotenv load skipped this (it imports shiina_cli.config, ~0.4 s, and must not
+    # sit in `import shiina_cli.main`). Run it here, still ahead of every reader of TERMINAL_*.
+    try:
+        from shiina_cli.env_loader import _reapply_terminal_config_bridge
+
+        _reapply_terminal_config_bridge(get_shiina_home())
+    except Exception:
+        pass
+
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
         from shiina_cli.stdio import configure_windows_stdio
@@ -3567,7 +3783,7 @@ def main():
     if _try_fast_chat_launch():
         return
 
-    parser, subparsers = _build_cli_parser()
+    parser, subparsers = _build_tree_for_argv(sys.argv[1:])
 
     # NixOS container mode routes ALL invocations into the managed container.
     # MUST run before parse_args() so --help, unrecognised flags and every

@@ -23,12 +23,16 @@ const MIN_WIDTH = 64
 const MAX_WIDTH = 128
 const TITLE_MAX = 64
 
-const STATUS_GLYPH: Record<string, string> = {
-  idle: '✓',
-  starting: '…',
-  waiting: '?',
-  working: '▶'
-}
+const STATUS_GLYPH = (status: string, t: Theme) =>
+  status === 'idle'
+    ? t.design.glyphs.check
+    : status === 'working'
+      ? t.design.glyphs.progress
+      : status === 'starting'
+        ? t.design.glyphs.ellipsis
+        : status === 'waiting'
+          ? t.design.glyphs.waiting
+          : t.design.glyphs.pending
 
 const STATUS_LABEL: Record<string, string> = {
   idle: 'idle',
@@ -697,7 +701,7 @@ export function ActiveSessionSwitcher({
 
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
-          {newSelectedRow ? '▸ ' : '  '}
+          {newSelectedRow ? `${t.design.glyphs.active} ` : '  '}
         </Text>
 
         <Box {...fixedSessionColumnStyle()} width={5}>
@@ -759,7 +763,7 @@ export function ActiveSessionSwitcher({
               width="100%"
             >
               <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-                {selected ? '▸ ' : '  '}
+                {selected ? `${t.design.glyphs.active} ` : '  '}
               </Text>
 
               <Box {...fixedSessionColumnStyle()} width={5}>
@@ -813,7 +817,7 @@ export function ActiveSessionSwitcher({
             width="100%"
           >
             <Text bold={selected} color={rowTextColor ?? t.color.muted}>
-              {selected ? '▸ ' : '  '}
+              {selected ? `${t.design.glyphs.active} ` : '  '}
             </Text>
 
             <Box {...fixedSessionColumnStyle()} width={5}>
@@ -840,7 +844,7 @@ export function ActiveSessionSwitcher({
                 }
                 wrap="truncate-end"
               >
-                {STATUS_GLYPH[status] ?? '·'} {STATUS_LABEL[status] ?? status}
+                {STATUS_GLYPH(status, t)} {STATUS_LABEL[status] ?? status}
               </Text>
             </Box>
 
@@ -864,7 +868,7 @@ export function ActiveSessionSwitcher({
       {newSelected ? (
         <>
           <Box marginTop={1}>
-            <Text color={t.color.label}>prompt › </Text>
+            <Text color={t.color.label}>prompt {t.design.glyphs.chevronClosed} </Text>
             <TextInput
               color={t.color.text}
               columns={promptColumns}

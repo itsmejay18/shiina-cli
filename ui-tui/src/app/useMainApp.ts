@@ -17,6 +17,7 @@ import { WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { layoutSections } from '../domain/layout.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -357,6 +358,8 @@ export function useMainApp(gw: GatewayClient) {
     return next
   }, [])
 
+  const visibleHistoryItems = historyItems
+
   // Wrapped row heights are width-dependent. Cached layout outlives a resize
   // and lands sticky-scroll at the stale max, cutting off the tail. The
   // hook's "scale heights by oldCols/newCols" path is too approximate for
@@ -364,16 +367,17 @@ export function useMainApp(gw: GatewayClient) {
   // off live geometry. Cost: per-row local state (e.g. systemOpen toggles)
   // resets on resize; small UX hit for a hard correctness win.
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
-    [cols, historyItems, messageId]
+    () => visibleHistoryItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
+    [cols, visibleHistoryItems, messageId]
   )
 
   const detailsLayoutKey = useMemo(() => {
-    const thinking = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
-    const tools = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
+    const layoutDefaults = layoutSections(ui.layout, ui.design?.layout?.sections)
+    const thinking = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride, layoutDefaults)
+    const tools = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride, layoutDefaults)
 
     return `${thinking}:${tools}`
-  }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
+  }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.layout, ui.sections])
 
   const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
   const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
@@ -401,9 +405,6 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [activeHeightCache, heightCacheKey, historyGeneration, virtualRows])
 
-  // Index of the first user-role message — separator-rendering in
-  // appLayout.tsx skips this row, so the height estimator must skip it
-  // too. -1 when no user message exists yet (no row will gate true).
   const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
 
   const estimateRowHeight = useCallback(
@@ -663,18 +664,18 @@ export function useMainApp(gw: GatewayClient) {
 
   const marker =
     overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
-      ? '⚠'
+      ? ui.theme.design.glyphs.alert
       : ui.busy
-        ? '⏳'
-        : '✓'
+        ? ui.theme.design.glyphs.busy
+        : ui.theme.design.glyphs.idle
 
   const tabCwd = ui.info?.cwd
 
   useTerminalTitle(
     model
       ? {
-          tab: composeTabTitle(marker, ui.sessionTitle, '', ''),
-          window: composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '')
+          tab: composeTabTitle(marker, ui.sessionTitle, '', '', ui.theme.design.glyphs.dotSeparator),
+          window: composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '', ui.theme.design.glyphs.dotSeparator)
         }
       : 'Shiina'
   )
@@ -1226,18 +1227,27 @@ export function useMainApp(gw: GatewayClient) {
   // resolved to hidden, the only thing ToolTrail will surface is the
   // floating-alert backstop (errors/warnings).  Mirror that so we don't
   // render an empty wrapper Box above the streaming area in quiet mode.
+  // Default progress visibility the active layout contributes — the layer
+  // between the user's explicit `sections` and the built-in defaults. `minimal`
+  // folds the trail away, `timeline` keeps steps open; both resolve here so the
+  // quiet-mode gate agrees with what ToolTrail actually paints.
+  const layoutDefaults = useMemo(
+    () => layoutSections(ui.layout, ui.design?.layout?.sections),
+    [ui.layout, ui.design]
+  )
+
   const anyPanelVisible = SECTION_NAMES.some(
-    s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+    s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride, layoutDefaults) !== 'hidden'
   )
 
   const thinkingPanelVisible =
-    sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+    sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride, layoutDefaults) !== 'hidden'
 
   const toolsPanelVisible =
-    sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+    sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride, layoutDefaults) !== 'hidden'
 
   const activityPanelVisible =
-    sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+    sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride, layoutDefaults) !== 'hidden'
 
   const showProgressArea = useTurnSelector(state =>
     anyPanelVisible
@@ -1373,7 +1383,7 @@ export function useMainApp(gw: GatewayClient) {
       // Cap the status-bar cwd/branch label tighter than the shared default so
       // it doesn't dominate the bar; the status rule reserves the left-side
       // essentials and truncates this further on narrow terminals.
-      cwdLabel: fmtProjectCwdBranch(cwd, gitBranch, ui.info?.project?.name, 28),
+      cwdLabel: fmtProjectCwdBranch(cwd, gitBranch, ui.info?.project?.name, ui.theme.design.glyphs.dotSeparator, 28),
       goodVibesTick,
       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
@@ -1384,11 +1394,15 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
+      // The marker glyph is NOT baked into this string: statusSegments renders
+      // it from the design's vocabulary, so restyling `bullet`/`focus` restyles
+      // the voice readout too. `voiceTone` is what it colours by.
       voiceLabel: voiceRecording
-        ? '● REC'
+        ? 'REC'
         : voiceProcessing
-          ? '◉ STT'
-          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+          ? 'STT'
+          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`,
+      voiceTone: voiceRecording ? ('rec' as const) : voiceProcessing ? ('stt' as const) : ('idle' as const),
     }),
     [
       cwd,

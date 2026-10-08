@@ -634,6 +634,7 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  limits_label?: string | null
   [key: string]: unknown
 }
 export interface McpServerStatus {
@@ -2819,6 +2820,7 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  limits_label?: string | null
   credits_lines?: string[] | null
   [key: string]: unknown
 }
@@ -3857,6 +3859,9 @@ export interface SkinPayload {
   banner_hero?: string
   tool_prefix?: string
   help_header?: string
+  tui?: Record<string, unknown>
+  design?: Record<string, unknown>
+  designs?: string[]
   [key: string]: unknown
 }
 /** ``shiina_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */

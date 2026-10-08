@@ -40,14 +40,14 @@ export function SubscriptionOverlay({ onClose, onPatch, overlay, t }: Subscripti
   // Teams have no personal subscription — dead-end to /topup, no picker.
   if (s.context === 'team') {
     return (
-      <Box borderColor={t.color.accent} borderStyle="round" flexDirection="column" paddingX={1}>
+      <Box borderColor={t.color.accent} borderStyle={t.design.borders.panel} flexDirection="column" paddingX={t.design.spacing.insetPadX}>
         <TeamContextScreen onClose={onClose} s={s} t={t} />
       </Box>
     )
   }
 
   return (
-    <Box borderColor={t.color.accent} borderStyle="round" flexDirection="column" paddingX={1}>
+    <Box borderColor={t.color.accent} borderStyle={t.design.borders.panel} flexDirection="column" paddingX={t.design.spacing.insetPadX}>
       {screen === 'picker' && <PickerScreen onClose={onClose} onPatch={onPatch} overlay={overlay} t={t} />}
       {screen === 'confirm' && <ConfirmScreen onClose={onClose} onPatch={onPatch} overlay={overlay} t={t} />}
       {screen === 'result' && <ResultScreen onClose={onClose} overlay={overlay} t={t} />}
@@ -341,27 +341,27 @@ function pendingTransition(c: SubscriptionStateResponse['current']): null | Pend
 // ── Screen: Overview (plan + usage + entry to the change flow) ────────
 
 /** Status line — dollars-only, and echoes a pending "Ultra → Plus" transition. */
-function statusLine(s: SubscriptionStateResponse): string {
+function statusLine(s: SubscriptionStateResponse, dot: string): string {
   const u = s.usage
   const c = s.current
   const plan = c?.tier_name ?? u?.plan_name ?? null
   const trans = pendingTransition(c)
   const flip = plan && trans ? ` → ${trans.to}` : ''
   const renewsRaw = u?.renews_display ?? null
-  const renews = renewsRaw ? ` · renews ${renewsRaw}` : ''
+  const renews = renewsRaw ? `${dot}renews ${renewsRaw}` : ''
   const viewOnly = !s.can_change_plan
 
   if (!plan) {
-    return 'Plan: Free · free models only'
+    return `Plan: Free${dot}free models only`
   }
 
   if (u?.status === 'low' && u.total_spendable_display) {
-    return `Plan: ${plan}${flip} · ${u.total_spendable_display} left`
+    return `Plan: ${plan}${flip}${dot}${u.total_spendable_display} left`
   }
 
-  const left = u?.total_spendable_display ? ` · ${u.total_spendable_display} left` : ''
+  const left = u?.total_spendable_display ? `${dot}${u.total_spendable_display} left` : ''
 
-  return `Plan: ${plan}${flip}${left}${viewOnly ? ' · view only' : renews}`
+  return `Plan: ${plan}${flip}${left}${viewOnly ? `${dot}view only` : renews}`
 }
 
 function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
@@ -463,20 +463,20 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
       {trans && (
         <Box flexDirection="column" marginBottom={1}>
           <Text bold color={t.color.warn}>
-            ⏳ Scheduled change
+            {t.design.glyphs.busy} Scheduled change
           </Text>
           <Box>
             <Text color={t.color.text}>{currentName} </Text>
-            <Text color={t.color.warn}>──▶ </Text>
+            <Text color={t.color.warn}>{`${t.design.borders.rule.repeat(2)}${t.design.glyphs.progress} `}</Text>
             <Text color={t.color.text}>{trans.to}</Text>
-            <Text color={t.color.muted}> · {trans.when}</Text>
+            <Text color={t.color.muted}>{t.design.glyphs.dotSeparator}{trans.when}</Text>
           </Box>
           <Text color={t.color.muted}>You keep {currentName} (and its credits) until then.</Text>
         </Box>
       )}
 
       <Text bold color={t.color.accent}>
-        {statusLine(s)}
+        {statusLine(s, t.design.glyphs.dotSeparator)}
       </Text>
       <UsageBars model={s.usage} t={t} />
       {freeNudge && (
@@ -498,7 +498,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
       {s.org_name && (
         <Text color={t.color.muted}>
           Org: {s.org_name}
-          {s.role ? ` · ${s.role}` : ''}
+          {s.role ? `${t.design.glyphs.dotSeparator}${s.role}` : ''}
         </Text>
       )}
 
@@ -674,7 +674,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
         <Text bold color={t.color.accent}>
           {isCancellation ? 'Confirm cancellation' : 'Confirm plan change'}
         </Text>
-        {chip && <Text color={chip.color}> · {chip.label}</Text>}
+        {chip && <Text color={chip.color}>{t.design.glyphs.dotSeparator}{chip.label}</Text>}
       </Box>
       {submitting && <Text color={t.color.muted}>Working…</Text>}
 
@@ -1007,7 +1007,7 @@ function TeamContextScreen({ onClose, s, t }: TeamContextScreenProps) {
       {s.org_name && (
         <Text color={t.color.muted}>
           Org: {s.org_name}
-          {s.role ? ` · ${s.role}` : ''}
+          {s.role ? `${t.design.glyphs.dotSeparator}${s.role}` : ''}
         </Text>
       )}
       <Text />

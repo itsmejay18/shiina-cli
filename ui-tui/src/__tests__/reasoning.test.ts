@@ -74,16 +74,19 @@ describe('cleanThinkingText', () => {
     ).toBe('**Resolving comments on GitHub**\nActual step\nnext step')
   })
 
-  it('separates joined situational status lines from actual thoughts', () => {
+  it('strips joined situational status lines from actual thoughts', () => {
     expect(
       cleanThinkingText('(*.”) shiina is reading through the files...I need to check the codebase')
-    ).toBe('(*.”) shiina is reading through the files...\nI need to check the codebase')
+    ).toBe('I need to check the codebase')
   })
 
   it('identifies situational status lines correctly', () => {
     expect(isThinkingStatusLine('(*.”) shiina is reading through the files...')).toBe(true)
     expect(isThinkingStatusLine('(¬_¬) shiina is inspecting the diff...')).toBe(true)
+    expect(isThinkingStatusLine('(¬_¬) Shiina is checking compiler output...')).toBe(true)
     expect(isThinkingStatusLine('shiina is studying the codebase...')).toBe(true)
+    expect(isThinkingStatusLine('shiina is planning...')).toBe(true)
+    expect(isThinkingStatusLine('shiina is overthinking...')).toBe(true)
     expect(isThinkingStatusLine('I need to inspect the code to find the bug.')).toBe(false)
   })
 })

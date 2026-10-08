@@ -1,0 +1,127 @@
+# codex — neutral, dim, minimal chrome (OpenAI Codex CLI flavour).
+#
+# The sole design of Shiina TUI.
+# Near-monochrome, dim secondary text, square boxes, flat indentation,
+# no chevrons or status dashes, minimal status line.
+
+name: codex
+dynamic: true
+description: Codex-style — neutral and dim, minimal chrome, square boxes, flat tree.
+
+colors:
+  accent: "#8fd694"          # user prompt, cursor, and active accents
+  border: "#4b4b4b"          # boxes are structure, not decoration
+  completionBg: "#2a2a2a"
+  completionCurrentBg: "#3a3a3a"
+  completionMetaBg: "#2a2a2a"
+  completionMetaCurrentBg: "#3a3a3a"
+  diffAdded: "#1c2e24"
+  diffAddedWord: "#86efac"
+  diffRemoved: "#321d24"
+  diffRemovedWord: "#fca5a5"
+  error: "#f7768e"
+  label: "#8fd694"
+  muted: "#8b8b8b"           # genuinely dim — Codex leans on this hard
+  ok: "#8fd694"
+  primary: "#8fd694"
+  prompt: "#8fd694"
+  selectionBg: "#3a3a3a"
+  sessionBorder: "#4b4b4b"
+  sessionLabel: "#9ca3af"
+  shellDollar: "#7aa2f7"
+  statusBad: "#f7768e"
+  statusBg: "#2a2a2a"
+  statusCritical: "#f7768e"
+  statusFg: "#d4d4d4"
+  statusGood: "#8fd694"
+  statusWarn: "#e0af68"
+  syntaxComment: "#6b7280"
+  syntaxKeyword: "#7aa2f7"
+  syntaxNumber: "#e0af68"
+  syntaxString: "#8fd694"
+  text: "#d4d4d4"
+  thinking: "#6b7280"        # reasoning recedes
+  tool: "#9ca3af"
+  warn: "#e0af68"
+
+prompt: ">"
+
+design:
+  # `normal` keeps a row of padding inside dialogs/panels (compact
+  # zeroes overlayPadY/panelPadY, which shrinks every popup).
+  density: normal
+  # Thin, square boxes — Codex's chrome is not rounded, so this is a real
+  # structural choice rather than a restatement of the built-in `round`.
+  panel: single
+  alert: single
+  rule: "─"
+
+  # Structure: blank air beside a title (never a drawn line), a header led by a
+  # rule dash and set dim, and flat indentation (no tree branching lines).
+  flank: space
+  header:
+    case: none
+    emphasis: dim
+    marker: none
+
+  indent:
+    unit: "  "
+    stem: "  "
+    branch: "  "
+    last: "  "
+
+  thinking:
+    maxLines: null       # null or 0 = unlimited, display all thinking lines without capping
+
+  spacing:
+    insetPadX: 1
+
+  glyphs:
+    # Every value here differs from the built-in glyph: a marker that merely
+    # restated the default would make "codex is different" a lie.
+    active: "⏺"              # an action in flight
+    bullet: "•"
+    check: "✔"
+    chevronClosed: "›"
+    chevronOpen: "⌄"
+    cross: "✘"
+    ellipsis: "⋯"
+    "off": "◌"               # quoted: a bare `off:` key is YAML 1.1 boolean False
+    pending: "⋅"
+    progress: "⏺"
+    selected: "❯"
+    separator: "  "          # dim air, not a drawn divider
+    statusHead: ""           # no rule dash beside the header
+    waiting: "◦"
+
+  status_bar:
+    # Close to Codex's idle status line: what model, where, how many tokens.
+    segments: [model, cwd, tokens]
+
+spinner:
+  think: [orbit]
+  tool: [scan]
+
+layout:
+  # Minimal furniture: no ambient rails, no pet, no persistent ledger. The
+  # transcript and the composer are the interface.
+  regions:
+    agentsDock: false
+    dock: true
+    fileChanges: true
+    ledger: false
+    pet: false
+    rails: false
+    scrollbar: true
+    sideColumn: false
+    statusRule: true
+    stickyPrompt: false
+    todoUnderPrompt: false
+  sections:
+    # Per-section progress visibility. live = open while the turn runs, then
+    # fold to a single header row once it settles; expanded = stay open;
+    # collapsed = header only; hidden = never render.
+    activity: hidden
+    subagents: live
+    thinking: live
+    tools: live

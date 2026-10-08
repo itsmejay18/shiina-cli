@@ -1,6 +1,6 @@
 import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
 
-import { sectionMode } from './details.js'
+import { detailsRequested, sectionMode } from './details.js'
 
 /**
  * Visual group a transcript block belongs to. Blocks in the same group render
@@ -91,27 +91,41 @@ export const hasLeadGap = (prev: Pick<Msg, 'kind' | 'role'> | undefined, cur: Pi
 export interface DetailsCtx {
   commandOverride?: boolean
   detailsMode: DetailsMode
+  /** Default progress visibility contributed by the active TUI layout. */
+  layoutDefaults?: SectionVisibility
+  /** The turn is still running — it renders through StreamingAssistant and is
+   *  the one place a trail is meant to be visible. */
+  live?: boolean
   sections?: SectionVisibility
 }
 
 const trailAllHidden = (ctx: DetailsCtx): boolean =>
-  sectionMode('thinking', ctx.detailsMode, ctx.sections, ctx.commandOverride) === 'hidden' &&
-  sectionMode('tools', ctx.detailsMode, ctx.sections, ctx.commandOverride) === 'hidden' &&
-  sectionMode('activity', ctx.detailsMode, ctx.sections, ctx.commandOverride) === 'hidden'
+  sectionMode('thinking', ctx.detailsMode, ctx.sections, ctx.commandOverride, ctx.layoutDefaults) === 'hidden' &&
+  sectionMode('tools', ctx.detailsMode, ctx.sections, ctx.commandOverride, ctx.layoutDefaults) === 'hidden' &&
+  sectionMode('activity', ctx.detailsMode, ctx.sections, ctx.commandOverride, ctx.layoutDefaults) === 'hidden'
+
+/** A finished turn shows its answer, not its work. Unless the user asked for
+ *  details (config or `/details`), a settled trail paints NOTHING — not even the
+ *  collapsed chevron rows, which were the clutter: one or two dead header lines
+ *  per past message. Only the live turn is exempt. */
+export const trailSuppressed = (ctx: DetailsCtx): boolean =>
+  !ctx.live && !detailsRequested(ctx.sections, ctx.commandOverride)
 
 /**
- * Whether a settled transcript block paints anything. A trail renders nothing
- * when it has no reasoning/tools/todos to show (e.g. the finalDetails segment
- * that carries only a token tally) or when every section it does have is hidden
- * (`/details hidden`); every other block draws at least one row. A block that
- * renders nothing is *transparent* to grouping: the block below it draws its
- * boundary against the nearest visible block instead (see prevRenderedMsg), so
- * a hidden or content-less trail never leaves a floating blank line, doubles
- * the gap after a user prompt, or pads the space above the final reply. In the
- * default/collapsed modes content-bearing trails always render, so this is a
- * no-op there.
+ * Whether a settled transcript block paints anything. A trail is suppressed
+ * unless details were asked for (see trailSuppressed), renders nothing when it
+ * has no reasoning/tools/todos to show (e.g. the finalDetails segment that
+ * carries only a token tally), and nothing when every section it does have is
+ * hidden (`/details hidden`); every other block draws at least one row. A block
+ * that renders nothing is *transparent* to grouping: the block below it draws
+ * its boundary against the nearest visible block instead (see prevRenderedMsg),
+ * so a hidden or content-less trail never leaves a floating blank line, doubles
+ * the gap after a user prompt, or pads the space above the final reply.
  */
-export const blockRenders = (msg: Pick<Msg, 'kind' | 'thinking' | 'todos' | 'tools'>, ctx: DetailsCtx): boolean => {
+export const blockRenders = (
+  msg: Pick<Msg, 'kind' | 'role' | 'thinking' | 'todos' | 'tools'>,
+  ctx: DetailsCtx
+): boolean => {
   if (msg.kind !== 'trail') {
     return true
   }
@@ -120,11 +134,15 @@ export const blockRenders = (msg: Pick<Msg, 'kind' | 'thinking' | 'todos' | 'too
     return true
   }
 
+  if (trailAllHidden(ctx)) {
+    return false
+  }
+
   if (!(msg.tools?.length || msg.thinking?.trim())) {
     return false
   }
 
-  return !trailAllHidden(ctx)
+  return true
 }
 
 /**

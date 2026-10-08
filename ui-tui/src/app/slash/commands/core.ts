@@ -4,6 +4,7 @@ import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { cycleLayout, LAYOUT_IDS, parseLayout } from '../../../domain/layout.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -77,9 +78,9 @@ const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
 
 const DETAILS_USAGE =
-  'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+  'usage: /details [hidden|collapsed|live|expanded|cycle]  or  /details <section> [hidden|collapsed|live|expanded|reset]'
 
-const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
+const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|live|expanded|reset]'
 
 // Shown when /exit or /quit is refused in the hosted dashboard chat. Kept as a
 // constant so the test asserts against the same source of truth as production.
@@ -106,9 +107,9 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
+            ['/details [hidden|collapsed|live|expanded|cycle]', 'set global agent detail visibility mode'],
             [
-              '/details <section> [hidden|collapsed|expanded|reset]',
+              '/details <section> [hidden|collapsed|live|expanded|reset]',
               'override one section (thinking/tools/subagents/activity)'
             ],
             ['/fortune [random|daily]', 'show a random or daily local fortune'],
@@ -297,6 +298,41 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`density ${next ? 'on' : 'off'}`))
+    }
+  },
+
+  {
+    help: 'switch the visual design (colours, glyphs, layout, borders, prompt, animation)',
+    name: 'design',
+    aliases: ['layout', 'skin'],
+    run: (arg, ctx) => {
+      const { gateway, transcript, ui } = ctx
+      const catalog = ui.designs
+      const word = arg.trim().toLowerCase()
+
+      // Bare `/design` reports; it never switches. The active name comes from
+      // the gateway (the resolved spec), not from anything cached here.
+      if (!word) {
+        const list = catalog.length ? catalog.join(' | ') : 'none found — run `shiina design list`'
+
+        return transcript.sys(`design ${ui.design?.name ?? 'default'} · available: ${list}`)
+      }
+
+      const next =
+        word === 'cycle' || word === 'toggle'
+          ? catalog[(catalog.indexOf(ui.design?.name ?? 'default') + 1) % catalog.length]
+          : word
+
+      if (!next) {
+        return transcript.sys('usage: /design <name> | cycle')
+      }
+
+      // Persist only: the gateway's change watcher resolves the design and
+      // repaints over skin.changed, so the resolved spec (colours included)
+      // always comes from the engine rather than being guessed here.
+      gateway.rpc<ConfigSetResponse>('config.set', { key: 'design', value: next }).catch(() => {})
+
+      queueMicrotask(() => transcript.sys(`design ${next} (applies within ~1s)`))
     }
   },
 

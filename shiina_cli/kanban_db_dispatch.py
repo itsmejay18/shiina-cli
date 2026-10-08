@@ -66,9 +66,20 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
 # Cooldown after a rate-limited (quota-wall) requeue before re-spawning. Without
 # it the task would re-spawn on the very next tick and bounce off the same quota
-# wall, burning a worker slot every tick for hours. Overridable via
-# ``SHIINA_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
+# wall, burning a worker slot every tick for hours. On the built-in default the
+# wait DOUBLES per consecutive rate-limited requeue (300 -> 600 -> 1200 -> 1800),
+# so a multi-hour wall costs a handful of respawns instead of one per cooldown.
+# An explicit ``SHIINA_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` is instead a FLAT wait
+# at every step — the operator named one number, honor it (0 disables).
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+# Ceiling for the doubling default ladder; an explicit operator override is flat
+# by definition and never climbs toward it.
+RATE_LIMIT_COOLDOWN_MAX_SECONDS = 1800  # 30 minutes
+
+# Closed runs walked when counting the trailing rate-limited streak; the cooldown
+# saturates after a few steps anyway.
+_RATE_LIMIT_STREAK_SCAN_LIMIT = 50
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -100,6 +111,7 @@ class DispatchResult:
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
     reaped_terminal_workers: list[str] = field(default_factory=list)
+    reaped_test_children: list[int] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
@@ -367,12 +379,35 @@ def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
     return False
 
 
-def _sigkill(kill, pid: int) -> bool:
-    """Best-effort SIGKILL; True when the signal was delivered."""
+def _signal_worker(pid: int, sig: int, kill, *, signal_fn=None) -> bool:
+    """Signal the worker's whole process GROUP when the pid can be proven to lead one.
+
+    Workers are spawned with ``start_new_session=True`` (see the ``Popen`` call below), so a
+    worker pid is its own process-group leader and everything it starts — pytest/xdist runs,
+    node builds — lives in that same group. Signalling only the leader orphans those children:
+    they survive the kill, keep spinning, and burn CPU for the rest of the session. An observed
+    leak of six orphaned pytest processes had been pegging ~2.5 cores and suppressing
+    throughput for over an hour before anyone noticed.
+
+    Falls back to a leader-only kill when the pid is not a group leader, and never takes the
+    group path when a test ``signal_fn`` was injected, so the hook stays deterministic.
+    """
+    if signal_fn is None and hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, sig)
+                return True
+        except (ProcessLookupError, OSError):
+            pass
+    kill(pid, sig)
+    return True
+
+
+def _sigkill(kill, pid: int, *, signal_fn=None) -> bool:
+    """Best-effort SIGKILL of the worker and its children; True when the signal was delivered."""
     try:
         # signal.SIGKILL doesn't exist on Windows; SIGTERM maps to TerminateProcess.
-        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
-        return True
+        return _signal_worker(pid, getattr(signal, "SIGKILL", signal.SIGTERM), kill, signal_fn=signal_fn)
     except (ProcessLookupError, OSError):
         return False
 
@@ -418,7 +453,7 @@ def _terminate_reclaimed_worker(
 
     info["termination_attempted"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        _signal_worker(int(pid), signal.SIGTERM, kill, signal_fn=signal_fn)
     except ProcessLookupError:
         # Already gone = successful termination. Leaving terminated=False would
         # make the reclaim guard misread a dead worker as alive and defer forever.
@@ -582,6 +617,83 @@ def heartbeat_worker(
     return True
 
 
+def reap_orphaned_worker_children(conn: sqlite3.Connection, *, min_age_seconds: int = 60) -> list[int]:
+    """SIGTERM test/build processes left behind by workers whose task no longer runs.
+
+    A group kill (``_signal_worker``) is not enough on its own: ``scripts/run_tests.sh`` spawns each
+    test file in a fresh ``python -m pytest`` with ``start_new_session=True`` — deliberately detached
+    so it is invisible to the outer pytest's process tree — so those children leave the worker's
+    process group and survive it. A leaked pytest then spins at ~40% CPU for the rest of the session.
+    An observed six-process leak pegged ~2.5 cores and suppressed fleet throughput for over an hour.
+
+    Safety: a process is only signalled when its command line names a worktree whose task is
+    ``done``/``archived``, its parent is not a running worker, and it is at least a minute old (so a
+    sibling still spawning is never caught mid-flight).
+
+    Deliberately NOT broadened to "any orphaned pytest": that was tried and it reaps a machine's other
+    detached pytest workers too, including the very suite that exercises ``dispatch_once`` (observed: 3
+    self-inflicted failures, suite 12.8s -> 312s). Only worktree-scoped, finished-task children are safe
+    to kill from a dispatcher.
+    POSIX-only; a no-op where ``/proc`` is absent.
+    """
+    if not os.path.isdir("/proc"):
+        return []
+
+    def _info(pid: int) -> tuple[int, str]:
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                # split after the LAST ')' — the comm field can contain spaces and parens
+                rest = fh.read().rsplit(b")", 1)[1].split()
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmd = fh.read().decode("utf8", "replace").replace("\0", " ").strip()
+            return int(rest[1]), cmd
+        except (OSError, IndexError, ValueError):
+            return -1, ""
+
+    finished = {
+        row[0]
+        for row in conn.execute("SELECT id FROM tasks WHERE status IN ('done', 'archived')")
+    }
+    if not finished:
+        return []
+
+    pids: list[int] = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    live_workers = set()
+    for name in entries:
+        if not name.isdigit():
+            continue
+        _, cmd = _info(int(name))
+        if "kanban task" in cmd:
+            live_workers.add(int(name))
+
+    now = time.time()
+    for name in entries:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        ppid, cmd = _info(pid)
+        if "pytest" not in cmd or ppid in live_workers:
+            continue
+        match = re.search(r"\.worktrees/(t_[0-9a-f]+)", cmd)
+        if not match or match.group(1) not in finished:
+            continue
+        try:
+            if now - os.path.getmtime(f"/proc/{pid}") < min_age_seconds:
+                continue  # too young to judge: may be a live sibling still starting up
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            pids.append(pid)
+        except OSError:
+            continue
+    return pids
+
+
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -631,11 +743,11 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         kill = _kill_fn(signal_fn)
         if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
             with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
+                _signal_worker(pid, signal.SIGTERM, kill, signal_fn=signal_fn)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+                killed = _sigkill(kill, pid, signal_fn=signal_fn)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
@@ -1362,6 +1474,55 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _rate_limit_streak(conn: sqlite3.Connection, task_id: str) -> int:
+    """Trailing count of consecutive ``rate_limited`` runs for ``task_id``.
+
+    This is the backoff step: each consecutive quota-wall requeue doubles the
+    cooldown. Any other closed outcome ends the streak, so a successful
+    (``completed``) run resets the backoff. Runs are walked newest-first with the
+    same ordering ``check_respawn_guard`` uses to pick the latest run.
+    """
+    streak = 0
+    rows = conn.execute(
+        "SELECT outcome FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT ?",
+        (task_id, _RATE_LIMIT_STREAK_SCAN_LIMIT),
+    ).fetchall()
+    for row in rows:
+        if row["outcome"] != "rate_limited":
+            break
+        streak += 1
+    return streak
+
+
+def rate_limit_cooldown_seconds(step: int, base: Optional[int] = None) -> int:
+    """Cooldown before probing a task on its ``step``-th consecutive rate-limited
+    requeue (1-based).
+
+    An explicit ``SHIINA_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` override is a FLAT
+    cooldown at every step — the operator named one exact wait, not a floor that
+    silently doubles. With the variable unset the built-in default doubles:
+    ``base * 2**(step-1)`` capped at ``RATE_LIMIT_COOLDOWN_MAX_SECONDS``.
+
+    ``base`` (a programmatic override) always follows the doubling ladder.
+    A resolved value ``<= 0`` disables the cooldown (probe next tick).
+    """
+    if base is None:
+        raw = os.environ.get("SHIINA_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "").strip()
+        try:
+            override = int(raw) if raw else -1
+        except ValueError:
+            override = -1
+        if override >= 0:
+            return override
+        base = _kb._resolve_rate_limit_cooldown_seconds()
+    if base <= 0:
+        return 0
+    cap = max(base, RATE_LIMIT_COOLDOWN_MAX_SECONDS)
+    return min(base << (max(1, int(step)) - 1), cap)
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1392,14 +1553,15 @@ def check_respawn_guard(
 
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
-    rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    #    The wait doubles per consecutive rate-limited requeue (``_rate_limit_streak``).
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
+        rl_cooldown = rate_limit_cooldown_seconds(_rate_limit_streak(conn, task_id))
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.
@@ -1970,6 +2132,9 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
+    # Tests detach into their own session (scripts/run_tests.sh), so a killed worker's children
+    # outlive the group signal; sweep the ones whose task is already finished.
+    result.reaped_test_children = reap_orphaned_worker_children(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
