@@ -1384,6 +1384,10 @@ DEFAULT_CONFIG = {
         # Resolved once when the agent's prompt is first built; missing/disabled names warn and
         # skip; SHIINA_IGNORE_RULES suppresses the list like the other auto-injected context.
         "auto_load": [],
+        # Full <available_skills> catalog in the system prompt. Off (default):
+        # on-demand discovery via the skills_list/skill_view tools (saves ~7KB
+        # every turn). On: restore the always-on catalog. Needs a new session.
+        "index_in_prompt": False,
         # Substitute ${SHIINA_SKILL_DIR} / ${SHIINA_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
@@ -2192,6 +2196,12 @@ DEFAULT_CONFIG = {
     "updates": {
         # Passive version/banner checks only; explicit `shiina update --check` remains enabled.
         "check": True,
+        # Background auto-update for git installs. When true and the passive check
+        # finds the checkout behind its origin, the CLI fires
+        # `shiina update --yes` once per 24h in a detached background process
+        # (startup never blocks). On by default — opt out per machine with
+        # `shiina config set updates.auto_update false`.
+        "auto_update": True,
         # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
         # config.yaml, .env, auth.json, profile DBs) into <SHIINA_HOME>/state-snapshots/, skipping
         # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``shiina backup`` zip in

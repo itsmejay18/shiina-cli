@@ -14,11 +14,17 @@ def resolve_skin() -> dict:
         from shiina_cli.skin_engine import init_skin_from_config, get_active_skin
         init_skin_from_config(_load_cfg())
         skin = get_active_skin()
+        # The welcome line greets by name when this profile's memory knows one; every surface
+        # renders the same greeting from the same branding block.
+        branding = dict(skin.branding or {})
+        with contextlib.suppress(Exception):
+            from shiina_cli.welcome_line import get_welcome_text
+            branding["welcome"] = get_welcome_text(branding.get("welcome", ""))
         # light/dark are paired palettes: the TUI prefers the block matching terminal polarity.
         return {
             "name": skin.name, "colors": skin.colors,
             "light_colors": skin.light_colors, "dark_colors": skin.dark_colors,
-            "branding": skin.branding, "banner_logo": skin.banner_logo,
+            "branding": branding, "banner_logo": skin.banner_logo,
             "banner_hero": skin.banner_hero, "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", "")}
     except Exception:
@@ -53,14 +59,17 @@ def _newest_mtime_ns(paths) -> int | None:
     return max((m for m in map(_watcher_mtime_ns, paths) if m is not None), default=None)
 
 
-def _skin_sig() -> tuple[str, float | None]:
-    """(active skin name, its user-file mtime). Built-ins have no file, so only
-    their name moves; a user skin's mtime lets an in-place color edit repaint too."""
+def _skin_sig() -> tuple:
+    """(active skin name, its user-file mtime, its desktop-scheme generation). Built-ins have no
+    file, so only their name moves; a user skin's mtime lets an in-place color edit repaint too,
+    and a dynamic skin's scheme mtime repaints when the wallpaper changes the palette."""
     name = str((_load_cfg().get("display") or {}).get("skin") or "default")
-    try:
-        return name, (_watcher_home() / "skins" / f"{name}.yaml").stat().st_mtime
-    except OSError:
-        return name, None
+    dynamic = ()
+    with contextlib.suppress(Exception):
+        from shiina_cli.skin_dynamic import DYNAMIC_SKIN_NAMES, scheme_generation
+        if name in DYNAMIC_SKIN_NAMES:
+            dynamic = scheme_generation()
+    return name, _watcher_mtime_ns(_watcher_home() / "skins" / f"{name}.yaml"), dynamic
 
 
 def _note_skin_broadcast() -> None:
