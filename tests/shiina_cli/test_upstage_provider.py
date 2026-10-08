@@ -9,14 +9,13 @@ config provider was discarded, and resolution fell through to env auto-detect.
 
 from __future__ import annotations
 
-import sys
-import types
+# Load the REAL dotenv package — never a bare ``types.ModuleType("dotenv")``: replacing the package
+# shadows ``dotenv.main``, so anything that lazily imports it later in this process
+# (``shiina_cli.doctor`` importing ``env_loader``) dies with ModuleNotFoundError. Neutering
+# ``load_dotenv`` is all these tests need, and the developer's real .env is still never loaded here.
+import dotenv as _dotenv
 
-
-if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
+_dotenv.load_dotenv = lambda *args, **kwargs: None
 
 
 class TestUpstageResolver:
