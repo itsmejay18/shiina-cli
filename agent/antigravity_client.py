@@ -157,6 +157,7 @@ class GoogleOAuthTokenManager:
         refresh_token: Optional[str] = None,
         *,
         persist: bool = True,
+        skip_active_pool: bool = False,
     ) -> None:
         """``persist=False`` binds the manager to a CALLER-SUPPLIED credential.
 
@@ -164,6 +165,10 @@ class GoogleOAuthTokenManager:
         ``credential_pool.antigravity`` entry, so a refresh of a non-active account must not
         be persisted over it. ``expiry=inf`` means "trust the supplied token until a 401 forces
         a refresh" — the caller has no expiry to hand over.
+
+        ``skip_active_pool=True`` is for the pool's OWN seeding probe: ``load_pool()`` seeds the
+        antigravity singleton by constructing this manager, so a manager that consulted the pool
+        would re-enter ``load_pool()`` forever.
         """
         self._access_token = access_token or None
         self._refresh_token = refresh_token or None
@@ -172,6 +177,7 @@ class GoogleOAuthTokenManager:
         self._source: str = "unknown"
         self._lock = threading.Lock()
         self._persist = persist
+        self._skip_active_pool = skip_active_pool
         if not (access_token or refresh_token):
             self._load_initial_tokens()
 
@@ -227,6 +233,8 @@ class GoogleOAuthTokenManager:
         True when a pooled entry supplied tokens; the store and paths stay untouched. The
         SecretService/secret-tool scan in ``_load_initial_tokens`` finds whichever account's
         tokens the Antigravity IDE last wrote — frequently not the active one."""
+        if self._skip_active_pool:
+            return False
         try:
             from agent.credential_pool import load_pool
 
@@ -250,6 +258,7 @@ class GoogleOAuthTokenManager:
                 except (TypeError, ValueError):
                     self._expiry = time.time() + 1800
             self._email = getattr(active, "label", None) or self._email
+            self._source = "credential_pool"
             logger.debug("Loaded Antigravity OAuth tokens from the active pooled account.")
             return True
         except Exception as exc:
@@ -436,7 +445,9 @@ class GoogleOAuthTokenManager:
 
     def _read_legacy_auth_json_token(self) -> Optional[Dict[str, Any]]:
         try:
-            auth_file = Path.home() / ".shiina" / "auth.json"
+            from shiina_constants import get_shiina_home
+
+            auth_file = get_shiina_home() / "auth.json"
             if not auth_file.exists():
                 return None
             with open(auth_file, "r", encoding="utf-8") as f:

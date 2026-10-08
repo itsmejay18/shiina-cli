@@ -166,6 +166,7 @@ class TestAntigravityCredentialStore(unittest.TestCase):
         from agent.antigravity_client import GoogleOAuthTokenManager
 
         with patch("shiina_cli.auth.read_credential_pool", return_value=[]), \
+             patch("agent.credential_pool.load_pool", return_value=None), \
              patch.object(GoogleOAuthTokenManager, "_read_keyring_token", return_value=None), \
              patch.object(GoogleOAuthTokenManager, "_read_legacy_auth_json_token", return_value=None), \
              patch.dict("os.environ", {}, clear=True):

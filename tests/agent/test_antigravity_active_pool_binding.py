@@ -46,13 +46,14 @@ def _unplug_external_steps(monkeypatch, tmp_path):
                 "GOOGLE_ACCESS_TOKEN"):
         monkeypatch.setenv(var, "")
         monkeypatch.delenv(var, raising=False)
-    # secretstorage: absent in this venv (ImportError path) — leave it.
+    # secretstorage/keyring/security-CLI/secret-tool: the venv may carry these, and a real
+    # signed-in session would answer before the auth.json fallback this file targets.
+    monkeypatch.setattr(GoogleOAuthTokenManager, "_read_keyring_token", lambda self: None)
     # secret-tool subprocess: make it fail fast.
     monkeypatch.setattr("agent.antigravity_client.shutil.which", lambda name: None)
     # auth.json: point the home at an empty temp dir.
     monkeypatch.setattr(
         "shiina_constants.get_shiina_home", lambda: tmp_path, raising=False)
-    # keyring: absent in this venv (ImportError path) — leave it.
 
 
 def test_default_manager_prefers_active_pool_entry_over_secret_service(monkeypatch, tmp_path):
@@ -101,3 +102,21 @@ def test_default_manager_falls_back_without_pool(monkeypatch, tmp_path):
 
     mgr = GoogleOAuthTokenManager()
     assert mgr._access_token == "secret-service-token"
+
+
+def test_pool_seeding_probe_does_not_consult_the_pool(monkeypatch):
+    """The seeding probe must not read the pool it is seeding.
+
+    ``load_pool("antigravity")`` seeds the singleton by constructing this manager, so a manager
+    that consulted the pool would re-enter ``load_pool()`` forever — a hang, not a recursion error.
+    """
+    consulted = []
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: consulted.append(provider))
+    monkeypatch.setattr(GoogleOAuthTokenManager, "_read_keyring_token", lambda self: None)
+    for var in ("ANTIGRAVITY_ACCESS_TOKEN", "AGY_ACCESS_TOKEN", "GEMINI_ACCESS_TOKEN",
+                "GOOGLE_ACCESS_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+
+    GoogleOAuthTokenManager(skip_active_pool=True)
+
+    assert consulted == [], "the pool's seeding probe re-entered load_pool()"

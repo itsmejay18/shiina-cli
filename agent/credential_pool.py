@@ -2492,7 +2492,8 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
 def _seed_antigravity_singleton(seed: _Seeder) -> None:
     try:
         from agent.antigravity_client import GoogleOAuthTokenManager
-        mgr = GoogleOAuthTokenManager()
+        # skip_active_pool: we ARE the pool load that would be re-entered (see the kwarg's docstring).
+        mgr = GoogleOAuthTokenManager(skip_active_pool=True)
         token = mgr.get_access_token()
         if token:
             email = mgr.get_authenticated_email()
