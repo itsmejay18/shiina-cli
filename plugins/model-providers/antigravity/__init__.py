@@ -40,7 +40,7 @@ class AntigravityProfile(ProviderProfile):
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 15.0
     ) -> list[str] | None:
-        """Live model catalog from Cloud Code Assist, falling back to the curated list."""
+        """Live model catalog: Cloud Code Assist, then the local ``agy`` CLI, then the curated list."""
         try:
             from agent.antigravity_client import AntigravityClient
 
@@ -52,7 +52,18 @@ class AntigravityProfile(ProviderProfile):
             if models:
                 return models
         except Exception:
-            logger.debug("Antigravity model listing failed; using the curated catalog.", exc_info=True)
+            logger.debug("Antigravity model listing failed.", exc_info=True)
+        # The direct listing can still come back empty (a pooled access token the API rejects while its
+        # refresh token is fine). The local `agy` CLI holds the session's own up-to-date catalog, so
+        # consult it before degrading to the curated snapshot.
+        try:
+            from agent.antigravity_client import fetch_antigravity_models
+
+            models = fetch_antigravity_models(timeout=timeout)
+            if models:
+                return models
+        except Exception:
+            logger.debug("Antigravity CLI model listing failed; using the curated catalog.", exc_info=True)
         return list(ANTIGRAVITY_MODELS)
 
 

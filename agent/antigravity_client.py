@@ -694,25 +694,34 @@ class AntigravityClient:
         Returns an empty list on any failure so the caller falls back to the curated catalog —
         model listing must never be the thing that blocks a session.
         """
-        try:
-            token = self.token_manager.get_access_token()
-        except Exception as exc:
-            logger.debug("No Antigravity token for model listing: %s", exc)
-            return []
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": DEFAULT_USER_AGENT,
-        }
-        try:
-            resp = self._http_client.post(
-                self.api_base + MODELS_PATH, headers=headers, json={"project": self.project}, timeout=timeout)
-            resp.raise_for_status()
-            data = resp.json() or {}
-        except Exception as exc:
-            logger.debug("fetchAvailableModels failed: %s", exc)
-            return []
-        return _extract_model_ids(data)
+        retried = False
+        while True:
+            try:
+                token = self.token_manager.get_access_token(force_refresh=retried)
+            except Exception as exc:
+                logger.debug("No Antigravity token for model listing: %s", exc)
+                return []
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "User-Agent": DEFAULT_USER_AGENT,
+            }
+            try:
+                resp = self._http_client.post(
+                    self.api_base + MODELS_PATH, headers=headers, json={"project": self.project}, timeout=timeout)
+                if resp.status_code == 401 and not retried:
+                    # The same recovery the chat path already uses: a pooled access token can be stale
+                    # while its refresh token is still good. Without this the listing silently returns
+                    # empty and the picker downgrades to the curated catalog.
+                    logger.warning("Antigravity access token returned 401 Unauthorized; refreshing token and retrying...")
+                    retried = True
+                    continue
+                resp.raise_for_status()
+                data = resp.json() or {}
+            except Exception as exc:
+                logger.debug("fetchAvailableModels failed: %s", exc)
+                return []
+            return _extract_model_ids(data)
 
     def _build_request_payload(
         self,

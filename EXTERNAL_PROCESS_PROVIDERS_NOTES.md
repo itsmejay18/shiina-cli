@@ -465,3 +465,72 @@ PY
 Expect `200 OK`. `GET /v1/usage` returns the account, daily free-token balance and wallet; it is
 already wired as an account-usage source (`agent/account_usage.py::_fetch_xkiro_account_usage`,
 keyed `"xkiro"` / `"custom:xkiro"`).
+
+### 10.1 The antigravity picker showed only the 6 curated models — a stale seeded pool entry shadowed a live session
+
+**Reported:** "I have paid models in agy but shiina shows 6." Chat worked; the model picker listed
+only `ANTIGRAVITY_MODELS` (the curated snapshot from the provider plugin).
+
+**Symptom chain (each step was measured, not inferred):**
+
+```bash
+# 1. the provider's listing returns the curated 6, not the live catalog
+.venv/bin/python -c "import model_tools; from providers import get_provider_profile; \
+  print(len(get_provider_profile('agy').fetch_models()))"         # -> 6
+
+# 2. the direct Cloud Code Assist listing is 401ing with a STALE pooled access token
+#    (WWW-Authenticate: error="invalid_token")
+# 3. the module-level chain DOES work, because it consults the local agy CLI
+.venv/bin/python -c "import model_tools; from agent.antigravity_client import fetch_antigravity_models; \
+  print(len(fetch_antigravity_models()))"                          # -> 14 (via `agy models`)
+# 4. and the keyring session agy keeps fresh is healthy: 27 models
+```
+
+**Root cause 1 — a seeded snapshot outranked its own source.** `_seed_antigravity_singleton`
+copies the signed-in session into `credential_pool.antigravity` with the label
+`Google Antigravity OAuth (agy)`. `_load_active_pool_tokens` prefers the pool's active entry, so
+once that snapshot's access token expired AND its refresh token was invalidated
+(`invalid_grant`), the dead copy still won over the live OS-keyring session it had been copied
+from — no fallback, everything antigravity degraded to 0 models.
+
+**Root cause 2 — `list_models()` had no 401 recovery.** The chat path already retried with
+`get_access_token(force_refresh=True)` on a 401; the listing path did not, so one stale access
+token meant an empty list, which the provider read as "no live catalog".
+
+**Fixes:**
+
+1. `agent/antigravity_client.py::AntigravityClient.list_models` — retry once on 401 with
+   `force_refresh=True`, mirroring the chat path's recovery.
+2. `plugins/model-providers/antigravity/__init__.py::fetch_models` — after the direct listing,
+   consult `fetch_antigravity_models()` (the `agy models` chain) before degrading to the curated
+   `ANTIGRAVITY_MODELS`.
+3. `tests/agent/test_antigravity_client.py::_manager_with` — also patches
+   `agent.credential_pool.load_pool`, because the active-pool step (added upstream) otherwise read
+   the developer's REAL pool and leaked a live token into an assertion expecting a mocked one.
+
+**User-side fix (no code needed) when an entry goes dead:** move the active credential off it.
+
+```bash
+shiina auth list antigravity          # shows priority order; ← marks the active entry
+shiina auth use antigravity <n>       # sets that entry's priority to 0
+```
+
+**Verify:** `.venv/bin/python -c "import model_tools; from providers import get_provider_profile; \
+print(len(get_provider_profile('agy').fetch_models()))"` → the live count (27 on a healthy
+account), and
+`scripts/run_tests.sh tests/plugins/test_antigravity_provider.py tests/agent/test_antigravity_client.py tests/agent/test_antigravity_active_pool_binding.py` → all green.
+
+**Data needed:** nothing new — this provider is `auth_type="oauth_external"` with `env_vars=()`; the
+credential is the signed-in Google/Antigravity session (keyring, SecretService, `secret-tool`, macOS
+Keychain, or the pooled copy). The `agy` binary is only ever consulted for the model LISTING, never
+for inference.
+
+**Windows caveat:** the CLI discovery list is POSIX-shaped — `$AGY_BIN`, `$ANTIGRAVITY_BIN`,
+`shutil.which("agy")`, `shutil.which("antigravity")`, `~/.local/bin/agy`. On Windows none of those
+resolve the IDE's shim (`%APPDATA%\Antigravity\bin\agy-node.cmd`), which is also not a model lister:
+it runs the Electron binary as node (`ELECTRON_RUN_AS_NODE=1`), so `agy-node.cmd models` is not
+`agy models`. Set `AGY_BIN` to a real CLI on that host, or accept the direct-API listing and the
+curated fallback. Nothing else here is platform-bound — inference and the listing are plain httpx,
+and `%LOCALAPPDATA%\Programs\Antigravity\` being empty (installer pending in
+`%LOCALAPPDATA%\antigravity-updater\pending\`) means there is no `agy` to find until Antigravity is
+installed and signed in on Windows.
