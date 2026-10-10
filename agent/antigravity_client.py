@@ -620,6 +620,9 @@ def fetch_antigravity_models(timeout: float = 15.0, token_manager: Optional[Goog
         shutil.which("agy"),
         shutil.which("antigravity"),
         str(Path.home() / ".local/bin/agy"),
+        # Windows installs the same CLI per-user under .gemini/bin (off PATH, so `which` misses it).
+        str(Path.home() / ".gemini/bin/agy"),
+        str(Path.home() / ".gemini/bin/agy.exe"),
     ):
         if not bin_name or not os.path.exists(bin_name):
             continue
@@ -637,11 +640,11 @@ def fetch_antigravity_models(timeout: float = 15.0, token_manager: Optional[Goog
                 for line in lines:
                     if not line or "Fetching available models" in line or line.startswith(("-", "*", "=")):
                         continue
-                    parts = line.split()
-                    if parts:
-                        model_id = parts[0]
-                        if model_id and not model_id.startswith(("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")):
-                            cli_models.append(model_id)
+                    model_id = re.split(r"\s", line, maxsplit=1)[0]
+                    # `agy models` prints "<id>\t<description>". A signed-out CLI prints an error
+                    # sentence instead, whose first word ("Error:") must never become a model id.
+                    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", model_id):
+                        cli_models.append(model_id)
                 if cli_models:
                     return cli_models
         except Exception as exc:

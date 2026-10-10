@@ -525,12 +525,14 @@ credential is the signed-in Google/Antigravity session (keyring, SecretService, 
 Keychain, or the pooled copy). The `agy` binary is only ever consulted for the model LISTING, never
 for inference.
 
-**Windows caveat:** the CLI discovery list is POSIX-shaped — `$AGY_BIN`, `$ANTIGRAVITY_BIN`,
-`shutil.which("agy")`, `shutil.which("antigravity")`, `~/.local/bin/agy`. On Windows none of those
-resolve the IDE's shim (`%APPDATA%\Antigravity\bin\agy-node.cmd`), which is also not a model lister:
-it runs the Electron binary as node (`ELECTRON_RUN_AS_NODE=1`), so `agy-node.cmd models` is not
-`agy models`. Set `AGY_BIN` to a real CLI on that host, or accept the direct-API listing and the
-curated fallback. Nothing else here is platform-bound — inference and the listing are plain httpx,
-and `%LOCALAPPDATA%\Programs\Antigravity\` being empty (installer pending in
-`%LOCALAPPDATA%\antigravity-updater\pending\`) means there is no `agy` to find until Antigravity is
-installed and signed in on Windows.
+**Windows caveat:** the CLI is a per-user install at `%USERPROFILE%\.gemini\bin\agy.exe` (the Windows
+twin of `~/.local/bin/agy`), not on PATH — the candidate list resolves both explicitly. The IDE's
+`%APPDATA%\Antigravity\bin\agy-node.cmd` shim is a different thing and NOT a model lister (it runs the
+Electron binary as node: `ELECTRON_RUN_AS_NODE=1`), so do not point `AGY_BIN` at it.
+`agy models` prints `<id>\t<description>`; a *signed-out* CLI prints an error sentence and still exits
+0, so the parser splits the first whitespace-delimited word and accepts it only if it is id-shaped.
+Reading the CLI's own session needs the credential binding: `pip install -e ".[antigravity]"`
+(`keyring` -> Windows Credential Manager, `secretstorage` -> Linux SecretService). Without that extra
+the keyring step is skipped and only the legacy `auth.json` / pooled copy can supply a token.
+Nothing else here is platform-bound — inference and the direct listing are plain httpx. Note
+`%LOCALAPPDATA%\Programs\Antigravity\` being empty is NOT fatal: it is the IDE, not the CLI.
