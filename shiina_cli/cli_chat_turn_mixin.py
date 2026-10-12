@@ -200,13 +200,28 @@ class CLIChatTurnMixin:
         persist_msg = text
         if images:
             from agent.context_references import format_reference_value
-            refs = "\n".join(f"@image:{format_reference_value(p)}" for p in images if p.exists())
+            refs = "\n".join(f"@image:{format_reference_value(str(p))}" for p in images if p.exists())
             persist_msg = f"{text}\n{refs}" if text else refs
 
         if agent is not None:
             agent._persist_user_message_override = persist_msg
 
-        return self._preprocess_images_with_vision(text, images)
+        # Reference the images by path and let the agent analyze them in-loop with
+        # vision_analyze — the shape the TUI sends. Pre-analyzing here ran a second,
+        # generic vision pass *before* the turn started (blocking submit; 60-90s for a
+        # large photo), whose description did not answer the user's actual question and
+        # still invited the agent to look again, so every attach paid for two analyses.
+        refs = "\n".join(
+            f"[The user attached an image: {p.name}]\n"
+            f"[Examine it with the vision_analyze tool using image_url: {p}]"
+            for p in map(Path, images)
+            if p.exists()
+        )
+
+        if not refs:
+            return text or "What do you see in this image?"
+
+        return f"{refs}\n\n{text}" if text else refs
 
     def _chat_stage_user_message(self, agent, message):
         """Append the staged user dict to the transcript under the agent's persist lock."""
