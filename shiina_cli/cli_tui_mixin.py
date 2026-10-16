@@ -1324,10 +1324,27 @@ class CLITuiMixin:
             event.app.invalidate()
 
     def _tui_handle_ctrl_v(self, event):
-        """Image paste for terminals without bracketed paste: GNOME Terminal/Konsole send raw
-        0x16. Terminals that intercept Ctrl+V (macOS Terminal, iTerm2, VSCode, Windows Terminal)
-        fire the bracketed-paste handler instead and never reach this."""
-        if self._try_attach_clipboard_image():
+        """Paste handler for Ctrl+V (raw 0x16) in terminals that don't intercept Ctrl+V
+        (such as foot, GNOME Terminal, Konsole, Alacritty).
+
+        Pastes text from the system clipboard into the input buffer. If no text is present
+        on the clipboard, falls back to attaching a clipboard image."""
+        from shiina_cli.clipboard import read_clipboard_text
+        text = read_clipboard_text()
+        if text:
+            from agent.message_sanitization import _sanitize_surrogates
+            text = _sanitize_surrogates(text.replace('\r\n', '\n').replace('\r', '\n'))
+            line_count = text.count('\n')
+            buf = event.current_buffer
+            if (
+                self._tui_paste_over_threshold(text, line_count, "paste_collapse_threshold")
+                and not buf.text.strip().startswith('/')):
+                placeholder = self._tui_collapse_paste(text, line_count, fallback=False)
+                prefix = "\n" if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n' else ""
+                buf.insert_text(prefix + placeholder)
+            else:
+                buf.insert_text(text)
+        elif self._try_attach_clipboard_image():
             event.app.invalidate()
 
     def _tui_handle_ctrl_l(self, event):

@@ -596,3 +596,49 @@ class TestVoiceSubmission:
         from cli import _VoiceInputMessage
         assert isinstance(queued, _VoiceInputMessage)
         assert queued.text == "hello"
+
+
+class TestReadClipboardText:
+    def test_read_clipboard_text_success(self):
+        from shiina_cli.clipboard import read_clipboard_text
+        with patch("shiina_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="pasted words here", returncode=0)
+            assert read_clipboard_text() == "pasted words here"
+
+    def test_read_clipboard_text_none_on_failure(self):
+        from shiina_cli.clipboard import read_clipboard_text
+        with patch("shiina_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=1)
+            assert read_clipboard_text() is None
+
+
+class TestCtrlVPaste:
+    def test_ctrl_v_pastes_text_into_buffer(self):
+        from cli import ShiinaCLI
+        cli = ShiinaCLI.__new__(ShiinaCLI)
+        cli._tui_paste_over_threshold = MagicMock(return_value=False)
+        cli._try_attach_clipboard_image = MagicMock()
+
+        event = MagicMock()
+        event.current_buffer.text = ""
+        event.current_buffer.cursor_position = 0
+
+        with patch("shiina_cli.clipboard.read_clipboard_text", return_value="hello world"):
+            cli._tui_handle_ctrl_v(event)
+
+        event.current_buffer.insert_text.assert_called_once_with("hello world")
+        cli._try_attach_clipboard_image.assert_not_called()
+
+    def test_ctrl_v_falls_back_to_image_when_no_text(self):
+        from cli import ShiinaCLI
+        cli = ShiinaCLI.__new__(ShiinaCLI)
+        cli._try_attach_clipboard_image = MagicMock(return_value=True)
+
+        event = MagicMock()
+
+        with patch("shiina_cli.clipboard.read_clipboard_text", return_value=None):
+            cli._tui_handle_ctrl_v(event)
+
+        cli._try_attach_clipboard_image.assert_called_once()
+        event.app.invalidate.assert_called_once()
+
