@@ -518,6 +518,48 @@ def _looks_like_option_value(value: str) -> bool:
     return value.startswith("-") or ":" in value
 
 
+# Shorthand flags: `shiina --dmg` / `shiina -car` are `shiina -p dmg`.
+_PROFILE_FLAG_ALIASES = {"--dmg": "dmg", "-car": "dmg", "--tala": "tala"}
+
+
+def _profile_flag_target(arg: str) -> str | None:
+    """``shiina --pharmashield`` -> ``"pharmashield"`` for ANY live profile name.
+
+    A ``--<name>`` token is the profile flag when ``<name>`` is a live profile and the token is
+    not a real top-level option — so ``--tui``/``--cli``/``--model`` keep their meaning even when
+    a profile carries that name. Marker-less or tombstoned dirs stay unresolvable (#95188).
+    """
+    if not arg.startswith("--") or "=" in arg:
+        return None
+    from shiina_cli._parser import top_level_flag_sets
+
+    if arg in top_level_flag_sets()[2]:
+        return None
+    name = arg[2:].strip().casefold()
+    if not re.match(_PROFILE_NAME_RE, name):
+        return None
+    from shiina_cli.profiles import _get_profiles_root
+    from shiina_constants import named_profile_is_live
+
+    return name if named_profile_is_live(_get_profiles_root() / name) else None
+
+
+def _expand_profile_aliases(argv: list) -> list:
+    """Rewrite shorthand flags into -p/--profile before the profile scan.
+
+    Expansion stops at ``--`` so passthrough regions (`mcp add ... --args <cmd>`)
+    are left alone.
+    """
+    out: list = []
+    for i, arg in enumerate(argv):
+        if arg == "--":
+            out.extend(argv[i:])
+            break
+        name = _PROFILE_FLAG_ALIASES.get(arg) or _profile_flag_target(arg)
+        out.extend(["--profile", name] if name else [arg])
+    return out
+
+
 def _scan_profile_flag(argv: list) -> tuple:
     """Find -p/--profile/--profile= in argv -> (name, tokens_consumed, index).
 
@@ -622,6 +664,7 @@ def _desktop_ssh_backend(argv: list) -> bool:
 
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set SHIINA_HOME before imports."""
+    sys.argv = [sys.argv[0], *_expand_profile_aliases(sys.argv[1:])]
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
 
